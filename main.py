@@ -1268,23 +1268,23 @@ def send_notion(report, data_packet=None):
     }
 
     # Notion 페이지 맨 위에 들어갈 메타 정보
-intro_blocks = [
-    make_text_block("heading_1", title),
-    make_text_block("paragraph", f"생성 시각: {created_at.strftime('%Y-%m-%d %H:%M:%S KST')}"),
-    make_text_block("paragraph", "자동 생성된 증시 분석 보고서입니다."),
-    make_text_block("paragraph", "주의: 이 보고서는 투자 권유가 아니라 참고용 분석 자료입니다."),
-    make_divider_block(),
+    intro_blocks = [
+        make_text_block("heading_1", title),
+        make_text_block("paragraph", f"생성 시각: {created_at.strftime('%Y-%m-%d %H:%M:%S KST')}"),
+        make_text_block("paragraph", "자동 생성된 증시 분석 보고서입니다."),
+        make_text_block("paragraph", "주의: 이 보고서는 투자 권유가 아니라 참고용 분석 자료입니다."),
+        make_divider_block(),
 
-    make_text_block("heading_2", "수집 데이터 요약"),
-    make_text_block("bulleted_list_item", f"NewsAPI 기사: {newsapi_count}개"),
-    make_text_block("bulleted_list_item", f"Alpha Vantage 기사: {alpha_count}개"),
-    make_text_block("bulleted_list_item", f"최종 뉴스 기사: {total_article_count}개"),
-    make_text_block("bulleted_list_item", f"OpenDART 전체 공시: {opendart_total_count}개"),
-    make_text_block("bulleted_list_item", f"OpenDART 중요 공시: {opendart_important_count}개"),
-    make_text_block("bulleted_list_item", f"OpenDART 등급: A {dart_a_count}개 / B {dart_b_count}개 / C {dart_c_count}개 / 기타 {dart_other_count}개"),
-    make_text_block("bulleted_list_item", f"관심 종목: {watchlist_count}개"),
-    make_divider_block(),
-]
+        make_text_block("heading_2", "수집 데이터 요약"),
+        make_text_block("bulleted_list_item", f"NewsAPI 기사: {newsapi_count}개"),
+        make_text_block("bulleted_list_item", f"Alpha Vantage 기사: {alpha_count}개"),
+        make_text_block("bulleted_list_item", f"최종 뉴스 기사: {total_article_count}개"),
+        make_text_block("bulleted_list_item", f"OpenDART 전체 공시: {opendart_total_count}개"),
+        make_text_block("bulleted_list_item", f"OpenDART 중요 공시: {opendart_important_count}개"),
+        make_text_block("bulleted_list_item", f"OpenDART 등급: A {dart_a_count}개 / B {dart_b_count}개 / C {dart_c_count}개 / 기타 {dart_other_count}개"),
+        make_text_block("bulleted_list_item", f"관심 종목: {watchlist_count}개"),
+        make_divider_block(),
+    ]
 
     # OpenAI 보고서 본문을 Notion 블록으로 변환
     report_blocks = markdown_to_notion_blocks(report)
