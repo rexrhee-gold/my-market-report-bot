@@ -60,9 +60,10 @@ def fetch_newsapi():
         return []
 
     query = (
-        "stock market OR equities OR inflation OR fed OR interest rates OR "
-        "semiconductor OR AI OR oil OR dollar OR bond yield OR Korea market OR KOSPI"
-    )
+    "stock OR market OR economy OR inflation OR interest rates OR "
+    "Federal Reserve OR Nvidia OR Apple OR Tesla OR AI OR semiconductor OR "
+    "oil OR dollar OR bond OR Korea OR KOSPI OR Samsung"
+)
 
     url = "https://newsapi.org/v2/everything"
 
