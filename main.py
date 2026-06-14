@@ -292,6 +292,9 @@ def build_data_packet():
     dart_disclosures,
     max_items=30,
 )
+    dart_grade_counts = count_dart_grades([
+    score_dart_disclosure(item) for item in dart_disclosures
+])
     articles.extend(newsapi_articles)
     articles.extend(alpha_articles)
 
@@ -304,6 +307,7 @@ def build_data_packet():
         "alpha_vantage_article_count": len(alpha_articles),
         "opendart_disclosure_count": len(dart_disclosures),
         "opendart_important_disclosure_count": len(important_dart_disclosures),
+        "opendart_grade_counts": dart_grade_counts,
         "watchlist_count": len(watchlist),
         "watchlist": watchlist,
         "articles": articles[:100],
@@ -316,6 +320,7 @@ def build_data_packet():
     print(f"Alpha Vantage 기사 수: {len(alpha_articles)}개")
     print(f"OpenDART 전체 공시 수: {len(dart_disclosures)}개")
     print(f"OpenDART 중요 공시 수: {len(important_dart_disclosures)}개")
+    print(f"OpenDART 등급별 공시 수: {dart_grade_counts}")
     print(f"최종 기사 수: {len(articles)}개")
     print(f"관심 종목 수: {len(watchlist)}개")
 
@@ -324,89 +329,106 @@ def build_data_packet():
 
 
 # =========================
-# OpenDART 공시 수집
+# OpenDART 중요 공시 필터링
 # =========================
 
-IMPORTANT_DART_KEYWORDS = [
-    # 실적 관련
-    "실적",
-    "영업실적",
-    "매출액",
-    "영업이익",
-    "잠정실적",
-    "결산실적",
-    "분기보고서",
-    "반기보고서",
-    "사업보고서",
+DART_GRADE_KEYWORDS = {
+    "A": [
+        # 즉시 확인 필요
+        "상장폐지",
+        "거래정지",
+        "관리종목",
+        "불성실공시",
+        "감사의견",
+        "의견거절",
+        "부적정",
+        "한정",
+        "횡령",
+        "배임",
+        "회생절차",
+        "파산",
+        "부도",
+        "소송",
+        "유상증자",
+        "전환사채",
+        "신주인수권",
+        "교환사채",
+        "최대주주",
+        "경영권",
+    ],
+    "B": [
+        # 중요하지만 해석 필요
+        "영업실적",
+        "잠정실적",
+        "매출액",
+        "영업이익",
+        "실적",
+        "배당",
+        "현금배당",
+        "자기주식",
+        "자사주",
+        "공급계약",
+        "단일판매",
+        "수주",
+        "계약체결",
+        "대규모",
+        "합병",
+        "분할",
+        "영업양수",
+        "영업양도",
+        "타법인",
+        "취득",
+        "처분",
+        "출자",
+    ],
+    "C": [
+        # 참고용
+        "대표이사",
+        "임원",
+        "주주총회",
+        "이사회",
+        "정정",
+        "분기보고서",
+        "반기보고서",
+        "사업보고서",
+        "사외이사",
+        "감사보고서",
+    ],
+}
 
-    # 자금 조달 / 주식 수
-    "유상증자",
-    "무상증자",
-    "전환사채",
-    "신주인수권",
-    "교환사채",
-    "사채권",
-    "CB",
-    "BW",
 
-    # 주주환원
-    "자기주식",
-    "자사주",
-    "배당",
-    "현금배당",
-    "주식배당",
+DART_GRADE_SCORE = {
+    "A": 100,
+    "B": 50,
+    "C": 10,
+    "기타": 0,
+}
 
-    # 계약 / 수주
-    "단일판매",
-    "공급계약",
-    "수주",
-    "계약체결",
-    "대규모",
-
-    # 지배구조 / 경영권
-    "최대주주",
-    "대표이사",
-    "임원",
-    "경영권",
-    "주주총회",
-    "이사회",
-
-    # 구조 변화
-    "합병",
-    "분할",
-    "영업양수",
-    "영업양도",
-    "타법인",
-    "출자",
-    "취득",
-    "처분",
-
-    # 리스크
-    "소송",
-    "횡령",
-    "배임",
-    "감사의견",
-    "거래정지",
-    "상장폐지",
-    "불성실공시",
-    "관리종목",
-]
 
 def score_dart_disclosure(disclosure):
     """
-    OpenDART 공시의 중요도를 점수화합니다.
-    공시명에 중요한 키워드가 포함될수록 점수가 올라갑니다.
+    OpenDART 공시를 A/B/C 등급으로 분류합니다.
+    A급 키워드가 하나라도 있으면 A급,
+    없으면 B급,
+    없으면 C급,
+    없으면 기타로 분류합니다.
     """
     report_name = disclosure.get("report_name") or ""
-    score = 0
+
     matched_keywords = []
+    grade = "기타"
 
-    for keyword in IMPORTANT_DART_KEYWORDS:
-        if keyword.lower() in report_name.lower():
-            score += 1
-            matched_keywords.append(keyword)
+    for current_grade in ["A", "B", "C"]:
+        for keyword in DART_GRADE_KEYWORDS[current_grade]:
+            if keyword.lower() in report_name.lower():
+                matched_keywords.append(keyword)
 
-    disclosure["importance_score"] = score
+        if matched_keywords:
+            grade = current_grade
+            break
+
+    disclosure["importance_grade"] = grade
+    disclosure["importance_score"] = DART_GRADE_SCORE.get(grade, 0)
     disclosure["matched_keywords"] = matched_keywords
 
     return disclosure
@@ -414,8 +436,8 @@ def score_dart_disclosure(disclosure):
 
 def filter_important_dart_disclosures(disclosures, max_items=30):
     """
-    OpenDART 공시 중 중요한 공시만 선별합니다.
-    중요 키워드가 포함된 공시를 우선 표시합니다.
+    OpenDART 공시 중 A/B/C 등급 공시만 선별합니다.
+    기타 공시는 보고서 표에서는 제외합니다.
     """
     scored = []
 
@@ -424,10 +446,10 @@ def filter_important_dart_disclosures(disclosures, max_items=30):
 
     important = [
         item for item in scored
-        if item.get("importance_score", 0) > 0
+        if item.get("importance_grade") in ["A", "B", "C"]
     ]
 
-    # 중요도 높은 순, 최신 접수일 순으로 정렬
+    # A급 → B급 → C급 순서, 같은 등급 안에서는 최신 접수일 우선
     important.sort(
         key=lambda x: (
             x.get("importance_score", 0),
@@ -437,6 +459,24 @@ def filter_important_dart_disclosures(disclosures, max_items=30):
     )
 
     return important[:max_items]
+
+
+def count_dart_grades(disclosures):
+    """
+    OpenDART 공시 등급별 개수를 계산합니다.
+    """
+    counts = {
+        "A": 0,
+        "B": 0,
+        "C": 0,
+        "기타": 0,
+    }
+
+    for disclosure in disclosures:
+        grade = disclosure.get("importance_grade", "기타")
+        counts[grade] = counts.get(grade, 0) + 1
+
+    return counts
 
 
 def load_dart_watchlist():
@@ -743,26 +783,45 @@ Notion 저장 형식 요구사항:
 def build_opendart_section(data_packet):
     """
     OpenDART 중요 공시 데이터를 보고서 맨 마지막에 강제로 붙입니다.
-    전체 공시 중 중요 공시만 표로 보여주고,
-    나머지는 개수만 요약합니다.
+    A/B/C 등급 공시만 표로 보여주고,
+    기타 공시는 개수만 표시합니다.
     """
     important_disclosures = data_packet.get("opendart_disclosures", [])
     total_count = data_packet.get("opendart_disclosure_count", 0)
-    important_count = data_packet.get("opendart_important_disclosure_count", len(important_disclosures))
+    important_count = data_packet.get(
+        "opendart_important_disclosure_count",
+        len(important_disclosures)
+    )
+
+    grade_counts = data_packet.get("opendart_grade_counts", {})
+    a_count = grade_counts.get("A", 0)
+    b_count = grade_counts.get("B", 0)
+    c_count = grade_counts.get("C", 0)
+    other_count = grade_counts.get("기타", 0)
 
     section = "\n\n## 한국 기업 공시 체크\n\n"
 
+    section += "- OpenDART 공시 중요도 기준\n"
+    section += "  - A급: 즉시 확인 필요\n"
+    section += "  - B급: 중요하지만 해석 필요\n"
+    section += "  - C급: 참고용\n\n"
+
     section += f"- OpenDART 전체 공시 수: {total_count}개\n"
-    section += f"- 중요 키워드 기준 선별 공시 수: {important_count}개\n\n"
+    section += f"- 중요 공시 수: {important_count}개\n"
+    section += f"- A급: {a_count}개\n"
+    section += f"- B급: {b_count}개\n"
+    section += f"- C급: {c_count}개\n"
+    section += f"- 기타: {other_count}개\n\n"
 
     if not important_disclosures:
         section += "관심 기업 기준 최근 OpenDART 주요 공시 없음\n"
         return section
 
-    section += "| 회사 | 종목코드 | 공시명 | 접수일 | 중요 키워드 | 해석 | 원문 링크 |\n"
-    section += "|---|---:|---|---|---|---|---|\n"
+    section += "| 등급 | 회사 | 종목코드 | 공시명 | 접수일 | 중요 키워드 | 해석 | 원문 링크 |\n"
+    section += "|---|---|---:|---|---|---|---|---|\n"
 
     for item in important_disclosures[:30]:
+        grade = item.get("importance_grade") or "기타"
         corp_name = item.get("corp_name") or ""
         stock_code = item.get("stock_code") or ""
         report_name = item.get("report_name") or ""
@@ -772,19 +831,28 @@ def build_opendart_section(data_packet):
 
         keyword_text = ", ".join(matched_keywords) if matched_keywords else "확인 필요"
 
+        if grade == "A":
+            interpretation = "즉시 확인 필요, 공시 원문 확인 필요"
+        elif grade == "B":
+            interpretation = "중요 공시, 세부 내용 확인 필요"
+        elif grade == "C":
+            interpretation = "참고용 공시, 필요 시 원문 확인"
+        else:
+            interpretation = "공시 원문 확인 필요"
+
         section += (
+            f"| {grade} "
             f"| {corp_name} "
             f"| {stock_code} "
             f"| {report_name} "
             f"| {receipt_date} "
             f"| {keyword_text} "
-            f"| 공시 원문 확인 필요 "
+            f"| {interpretation} "
             f"| {viewer_url} |\n"
         )
 
-    if total_count > important_count:
-        other_count = total_count - important_count
-        section += f"\n기타 일반 공시 {other_count}개는 중요 키워드 기준에서 제외했습니다.\n"
+    if other_count > 0:
+        section += f"\n기타 일반 공시 {other_count}개는 중요도 기준에서 표 표시를 제외했습니다.\n"
 
     return section
 
@@ -910,6 +978,11 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
     newsapi_count = data_packet.get("newsapi_article_count", 0)
     alpha_count = data_packet.get("alpha_vantage_article_count", 0)
     opendart_count = data_packet.get("opendart_disclosure_count", 0)
+    opendart_important_count = data_packet.get("opendart_important_disclosure_count", 0)
+    grade_counts = data_packet.get("opendart_grade_counts", {})
+    a_count = grade_counts.get("A", 0)
+    b_count = grade_counts.get("B", 0)
+    c_count = grade_counts.get("C", 0)
     total_article_count = data_packet.get("article_count", 0)
     watchlist_count = data_packet.get("watchlist_count", 0)
 
@@ -947,7 +1020,9 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
     message += "\n*수집 데이터*\n"
     message += f"• NewsAPI: {newsapi_count}개\n"
     message += f"• Alpha Vantage: {alpha_count}개\n"
-    message += f"• OpenDART 공시: {opendart_count}개\n"
+    message += f"• OpenDART 전체 공시: {opendart_count}개\n"
+    message += f"• OpenDART 중요 공시: {opendart_important_count}개\n"
+    message += f"• 공시 등급: A {a_count}개 / B {b_count}개 / C {c_count}개\n"
     message += f"• 최종 뉴스 기사: {total_article_count}개\n"
     message += f"• 관심 종목: {watchlist_count}개\n"
 
