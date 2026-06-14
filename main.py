@@ -690,21 +690,115 @@ def send_email(report):
 # Slack 발송
 # =========================
 
-def send_slack(report):
+def extract_section_lines(report, section_title, max_lines=5):
+    """
+    보고서에서 특정 섹션의 핵심 줄만 뽑습니다.
+    예: '오늘 한 줄 요약', '리스크 요인'
+    """
+    lines = report.splitlines()
+    collecting = False
+    result = []
+
+    for line in lines:
+        raw_line = line.strip()
+
+        if not raw_line:
+            continue
+
+        if raw_line.startswith("## ") and section_title in raw_line:
+            collecting = True
+            continue
+
+        if collecting and raw_line.startswith("## "):
+            break
+
+        if collecting:
+            cleaned = raw_line.replace("**", "").strip()
+            cleaned = cleaned.lstrip("-").strip()
+            cleaned = cleaned.lstrip("*").strip()
+
+            if cleaned:
+                result.append(cleaned)
+
+            if len(result) >= max_lines:
+                break
+
+    return result
+
+
+def build_slack_summary(report, data_packet=None, notion_url=None):
+    """
+    Slack에 보낼 짧은 요약 메시지를 만듭니다.
+    """
+    data_packet = data_packet or {}
+
+    one_line_summary = extract_section_lines(report, "오늘 한 줄 요약", max_lines=5)
+    risk_lines = extract_section_lines(report, "리스크 요인", max_lines=3)
+    checklist_lines = extract_section_lines(report, "오늘 체크리스트", max_lines=3)
+
+    if not one_line_summary:
+        one_line_summary = ["보고서 생성 완료. 전체 내용은 Notion 또는 이메일에서 확인하세요."]
+
+    newsapi_count = data_packet.get("newsapi_article_count", 0)
+    alpha_count = data_packet.get("alpha_vantage_article_count", 0)
+    opendart_count = data_packet.get("opendart_disclosure_count", 0)
+    total_article_count = data_packet.get("article_count", 0)
+    watchlist_count = data_packet.get("watchlist_count", 0)
+
+    message = "📈 *오늘의 증시 분석 보고서 생성 완료*\n\n"
+
+    message += "*오늘 한 줄 요약*\n"
+    for line in one_line_summary:
+        message += f"• {line}\n"
+
+    message += "\n*수집 데이터*\n"
+    message += f"• NewsAPI: {newsapi_count}개\n"
+    message += f"• Alpha Vantage: {alpha_count}개\n"
+    message += f"• OpenDART 공시: {opendart_count}개\n"
+    message += f"• 최종 뉴스 기사: {total_article_count}개\n"
+    message += f"• 관심 종목: {watchlist_count}개\n"
+
+    if risk_lines:
+        message += "\n*주요 리스크*\n"
+        for line in risk_lines:
+            message += f"• {line}\n"
+
+    if checklist_lines:
+        message += "\n*오늘 체크리스트*\n"
+        for line in checklist_lines:
+            message += f"• {line}\n"
+
+    message += "\n*전체 보고서*\n"
+
+    if notion_url:
+        message += f"• Notion에서 보기: {notion_url}\n"
+    else:
+        message += "• Notion 링크 없음. 이메일 또는 Notion 페이지를 직접 확인하세요.\n"
+
+    message += "\n_이 보고서는 투자 권유가 아니라 참고용 분석 자료입니다._"
+
+    return message
+
+
+def send_slack(report, data_packet=None, notion_url=None):
+    """
+    Slack에는 전체 보고서가 아니라 짧은 요약 메시지만 보냅니다.
+    """
     if not SLACK_WEBHOOK_URL:
         print("SLACK_WEBHOOK_URL이 없어서 Slack 발송을 건너뜁니다.")
         return
 
-    slack_text = report[:7000]
-
-    if len(report) > 7000:
-        slack_text += "\n\n...(보고서가 길어 일부만 표시했습니다. 전체 내용은 이메일 또는 Notion을 확인하세요.)"
+    slack_text = build_slack_summary(
+        report=report,
+        data_packet=data_packet,
+        notion_url=notion_url,
+    )
 
     payload = {
-        "text": f"*오늘의 증시 분석 보고서*\n\n{slack_text}"
+        "text": slack_text
     }
 
-    print("Slack 발송 시작")
+    print("Slack 요약 메시지 발송 시작")
 
     response = requests.post(
         SLACK_WEBHOOK_URL,
@@ -715,7 +809,8 @@ def send_slack(report):
     if response.status_code != 200:
         raise Exception(f"Slack 발송 실패: {response.status_code} {response.text}")
 
-    print("Slack 발송 완료")
+    print("Slack 요약 메시지 발송 완료")
+
 
 
 # =========================
@@ -883,11 +978,11 @@ def send_notion(report):
     """
     if not NOTION_TOKEN:
         print("NOTION_TOKEN이 없어서 Notion 저장을 건너뜁니다.")
-        return
+        return None
 
     if not NOTION_PARENT_PAGE_ID:
         print("NOTION_PARENT_PAGE_ID가 없어서 Notion 저장을 건너뜁니다.")
-        return
+        return None
 
     created_at = now_kst()
     title = f"증시 분석 보고서 - {created_at.strftime('%Y-%m-%d %H:%M KST')}"
@@ -957,8 +1052,12 @@ def send_notion(report):
         append_blocks_to_notion_page(page_id, remaining_blocks, headers)
         print("Notion 추가 블록 저장 완료")
 
-    print("Notion 저장 완료")
+    notion_url = page.get("url")
 
+    print("Notion 저장 완료")
+    print(f"Notion URL: {notion_url}")
+
+    return notion_url
 
 # =========================
 # 메인 실행
@@ -975,14 +1074,19 @@ def main():
     report = generate_report(data_packet)
 
     if not report:
-        raise ValueError("OpenAI 보고서 생성 결과가 비어 있습니다. generate_report()의 return report를 확인하세요.")
+        raise ValueError("OpenAI 보고서 생성 결과가 비어 있습니다.")
 
-    # OpenDART 공시 섹션을 보고서 맨 마지막에 강제로 추가
     report = report + build_opendart_section(data_packet)
 
     send_email(report)
-    send_slack(report)
-    send_notion(report)
+
+    notion_url = send_notion(report)
+
+    send_slack(
+        report=report,
+        data_packet=data_packet,
+        notion_url=notion_url,
+    )
 
     print("Daily Market Report 완료")
 
