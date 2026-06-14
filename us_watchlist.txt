@@ -1,0 +1,12 @@
+# 미국 관심 종목 예시
+# 형식: 티커,이름
+NVDA,NVIDIA
+AAPL,Apple
+MSFT,Microsoft
+GOOGL,Alphabet
+META,Meta
+TSLA,Tesla
+AMD,AMD
+AVGO,Broadcom
+SMH,VanEck Semiconductor ETF
+QQQ,Invesco QQQ
