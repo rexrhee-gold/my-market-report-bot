@@ -6,6 +6,10 @@ import zipfile
 import smtplib
 import hashlib
 import requests
+try:
+    import yfinance as yf
+except Exception:
+    yf = None
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -84,10 +88,10 @@ def korean_time_label():
 
 REPORT_CONFIG = {
     "0740": {
-        "name": "프리마켓 대응 리포트",
+        "name": "한국증시 프리마켓 대응 리포트",
         "prompt_path": "prompts/korea_0740.md",
-        "subject_prefix": "[자동] 프리마켓 대응 리포트",
-        "slack_title": "🇰🇷 프리마켓 대응 리포트",
+        "subject_prefix": "[자동] 한국증시 프리마켓 대응 리포트",
+        "slack_title": "🇰🇷 한국증시 프리마켓 대응 리포트",
     },
     "0840": {
         "name": "장전 최종 체크",
@@ -652,49 +656,335 @@ def build_opendart_section(data_packet):
 # 데이터 패킷
 # =========================
 
-def build_market_data_status(report_mode):
-    if report_mode == "0740":
+def safe_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def fast_info_get(fast_info, key):
+    try:
+        return fast_info.get(key)
+    except Exception:
+        try:
+            return getattr(fast_info, key)
+        except Exception:
+            return None
+
+
+def calculate_change(last_price, previous_close):
+    last_price = safe_float(last_price)
+    previous_close = safe_float(previous_close)
+
+    if last_price is None or previous_close is None or previous_close == 0:
+        return None, None
+
+    change = last_price - previous_close
+    change_pct = (change / previous_close) * 100
+
+    return change, change_pct
+
+
+def format_number(value, decimals=2):
+    value = safe_float(value)
+
+    if value is None:
+        return "확인 필요"
+
+    return f"{value:,.{decimals}f}"
+
+
+def quote_to_text(quote):
+    if not quote or quote.get("status") != "ok":
+        return "확인 필요"
+
+    last_price = quote.get("last_price")
+    change = quote.get("change")
+    change_pct = quote.get("change_pct")
+
+    if change is None or change_pct is None:
+        return f"{format_number(last_price)}"
+
+    return f"{format_number(last_price)} ({change:+.2f}, {change_pct:+.2f}%)"
+
+
+def fetch_yfinance_quote(symbol, name):
+    """
+    Yahoo Finance/yfinance에서 지수, 환율, 종목, 원자재 데이터를 가져옵니다.
+
+    주의:
+    - 무료 공개 데이터라 지연 시세일 수 있습니다.
+    - 일부 한국시장 데이터나 선물 데이터는 조회가 안 될 수 있습니다.
+    - 조회 실패 시 보고서에서는 '확인 필요'로 표시합니다.
+    """
+    empty_result = {
+        "symbol": symbol,
+        "name": name,
+        "status": "확인 필요",
+        "last_price": None,
+        "previous_close": None,
+        "change": None,
+        "change_pct": None,
+        "currency": None,
+    }
+
+    if yf is None:
+        empty_result["error"] = "yfinance 패키지가 설치되어 있지 않습니다."
+        return empty_result
+
+    try:
+        ticker = yf.Ticker(symbol)
+
+        last_price = None
+        previous_close = None
+        currency = None
+
+        try:
+            fast_info = ticker.fast_info
+            last_price = safe_float(
+                fast_info_get(fast_info, "last_price")
+                or fast_info_get(fast_info, "lastPrice")
+            )
+            previous_close = safe_float(
+                fast_info_get(fast_info, "previous_close")
+                or fast_info_get(fast_info, "previousClose")
+            )
+            currency = fast_info_get(fast_info, "currency")
+        except Exception:
+            pass
+
+        # 장중 데이터가 있으면 마지막 체결/지수값을 우선 사용
+        try:
+            intraday = ticker.history(period="1d", interval="5m")
+            if intraday is not None and not intraday.empty:
+                latest_close = safe_float(intraday["Close"].dropna().iloc[-1])
+                if latest_close is not None:
+                    last_price = latest_close
+        except Exception:
+            pass
+
+        # 전일 종가 또는 현재가가 없으면 일봉 데이터로 보완
+        try:
+            daily = ticker.history(period="7d", interval="1d")
+            if daily is not None and not daily.empty:
+                closes = daily["Close"].dropna()
+
+                if last_price is None and len(closes) >= 1:
+                    last_price = safe_float(closes.iloc[-1])
+
+                if previous_close is None and len(closes) >= 2:
+                    previous_close = safe_float(closes.iloc[-2])
+        except Exception:
+            pass
+
+        change, change_pct = calculate_change(last_price, previous_close)
+
+        if last_price is None:
+            empty_result["error"] = "시세 데이터 없음"
+            return empty_result
+
         return {
-            "sp500": "확인 필요",
-            "nasdaq": "확인 필요",
-            "dow": "확인 필요",
-            "russell2000": "확인 필요",
-            "semiconductor_index": "확인 필요",
-            "us_10y_yield": "확인 필요",
-            "dollar_index": "확인 필요",
-            "usd_krw_or_ndf": "확인 필요",
-            "wti": "확인 필요",
-            "brent": "확인 필요",
-            "gold": "확인 필요",
-            "big_tech": "확인 필요",
-            "us_sector_flow": "확인 필요",
+            "symbol": symbol,
+            "name": name,
+            "status": "ok",
+            "last_price": last_price,
+            "previous_close": previous_close,
+            "change": change,
+            "change_pct": change_pct,
+            "currency": currency,
         }
 
-    if report_mode == "0840":
-        return {
-            "kospi200_futures": "확인 필요",
-            "us_futures": "확인 필요",
-            "usd_krw_or_ndf": "확인 필요",
-            "dollar_index": "확인 필요",
-            "us_10y_yield": "확인 필요",
-            "wti_brent": "확인 필요",
-            "asia_market_preopen": "확인 필요",
-            "domestic_premarket_news": "뉴스/공시 데이터 기반으로 확인",
-        }
+    except Exception as error:
+        empty_result["error"] = str(error)
+        return empty_result
+
+
+def first_ok_quote(candidates):
+    """
+    같은 데이터에 대해 여러 Yahoo Finance 심볼 후보를 시도합니다.
+    예: 원/달러 환율은 KRW=X가 보통 사용되지만 환경에 따라 실패할 수 있습니다.
+    """
+    for symbol, name in candidates:
+        quote = fetch_yfinance_quote(symbol, name)
+
+        if quote.get("status") == "ok":
+            return quote
 
     return {
-        "kospi_current": "확인 필요",
-        "kosdaq_current": "확인 필요",
-        "kospi200_futures": "확인 필요",
-        "foreign_spot_flow": "확인 필요",
-        "foreign_futures_flow": "확인 필요",
-        "institution_flow": "확인 필요",
-        "retail_flow": "확인 필요",
-        "usd_krw": "확인 필요",
-        "samsung_electronics": "확인 필요",
-        "sk_hynix": "확인 필요",
-        "leading_sectors_by_volume": "확인 필요",
+        "symbol": candidates[0][0],
+        "name": candidates[0][1],
+        "status": "확인 필요",
+        "last_price": None,
+        "previous_close": None,
+        "change": None,
+        "change_pct": None,
+        "currency": None,
     }
+
+
+def fetch_yfinance_market_data(report_mode):
+    """
+    한국증시 장전·장중 자동화에 필요한 실제 시장 데이터를 1차로 연결합니다.
+
+    현재 연결 데이터:
+    - KOSPI, KOSDAQ
+    - KOSPI200 지수 대체 데이터
+    - 삼성전자, SK하이닉스
+    - 원/달러 환율
+    - 미국 주요 지수와 선물
+    - 달러 인덱스, 미국 10년물 금리
+    - WTI, Brent, 금
+    - 주요 빅테크
+    """
+    print("Yahoo Finance/yfinance 시장 데이터 수집 시작")
+
+    korea_indices = {
+        "kospi": fetch_yfinance_quote("^KS11", "KOSPI"),
+        "kosdaq": fetch_yfinance_quote("^KQ11", "KOSDAQ"),
+        "kospi200": fetch_yfinance_quote("^KS200", "KOSPI200"),
+    }
+
+    korea_key_stocks = {
+        "samsung_electronics": fetch_yfinance_quote("005930.KS", "삼성전자"),
+        "sk_hynix": fetch_yfinance_quote("000660.KS", "SK하이닉스"),
+    }
+
+    fx_rates = {
+        "usd_krw": first_ok_quote([
+            ("KRW=X", "원/달러 환율"),
+            ("USDKRW=X", "원/달러 환율"),
+        ]),
+    }
+
+    us_indices = {
+        "sp500": fetch_yfinance_quote("^GSPC", "S&P 500"),
+        "nasdaq": fetch_yfinance_quote("^IXIC", "Nasdaq"),
+        "dow": fetch_yfinance_quote("^DJI", "Dow"),
+        "russell2000": fetch_yfinance_quote("^RUT", "Russell 2000"),
+        "sox": fetch_yfinance_quote("^SOX", "필라델피아 반도체지수"),
+    }
+
+    us_futures = {
+        "sp500_futures": fetch_yfinance_quote("ES=F", "S&P 500 Futures"),
+        "nasdaq_futures": fetch_yfinance_quote("NQ=F", "Nasdaq Futures"),
+        "dow_futures": fetch_yfinance_quote("YM=F", "Dow Futures"),
+        "russell2000_futures": fetch_yfinance_quote("RTY=F", "Russell 2000 Futures"),
+    }
+
+    global_indicators = {
+        "us_10y_yield": fetch_yfinance_quote("^TNX", "미국 10년물 국채금리"),
+        "dollar_index": fetch_yfinance_quote("DX-Y.NYB", "달러 인덱스"),
+    }
+
+    commodities = {
+        "wti": fetch_yfinance_quote("CL=F", "WTI 원유"),
+        "brent": fetch_yfinance_quote("BZ=F", "Brent 원유"),
+        "gold": fetch_yfinance_quote("GC=F", "금"),
+    }
+
+    big_tech = {
+        "nvidia": fetch_yfinance_quote("NVDA", "NVIDIA"),
+        "apple": fetch_yfinance_quote("AAPL", "Apple"),
+        "microsoft": fetch_yfinance_quote("MSFT", "Microsoft"),
+        "tesla": fetch_yfinance_quote("TSLA", "Tesla"),
+    }
+
+    market_data = {
+        "data_source": "Yahoo Finance via yfinance",
+        "data_delay_note": "무료 공개 데이터 기반이므로 지연 시세일 수 있습니다.",
+        "report_mode": report_mode,
+
+        "korea_indices": korea_indices,
+        "korea_key_stocks": korea_key_stocks,
+        "fx_rates": fx_rates,
+        "us_indices": us_indices,
+        "us_futures": us_futures,
+        "global_indicators": global_indicators,
+        "commodities": commodities,
+        "big_tech": big_tech,
+
+        # 프롬프트가 바로 읽기 쉬운 요약 필드
+        "kospi_current": quote_to_text(korea_indices["kospi"]),
+        "kosdaq_current": quote_to_text(korea_indices["kosdaq"]),
+        "kospi200_index": quote_to_text(korea_indices["kospi200"]),
+        "kospi200_futures": "확인 필요 - 현재 1차 버전은 KOSPI200 지수 대체 데이터만 제공",
+        "samsung_electronics": quote_to_text(korea_key_stocks["samsung_electronics"]),
+        "sk_hynix": quote_to_text(korea_key_stocks["sk_hynix"]),
+        "usd_krw": quote_to_text(fx_rates["usd_krw"]),
+        "usd_krw_or_ndf": quote_to_text(fx_rates["usd_krw"]),
+
+        "sp500": quote_to_text(us_indices["sp500"]),
+        "nasdaq": quote_to_text(us_indices["nasdaq"]),
+        "dow": quote_to_text(us_indices["dow"]),
+        "russell2000": quote_to_text(us_indices["russell2000"]),
+        "semiconductor_index": quote_to_text(us_indices["sox"]),
+        "us_futures": {
+            "sp500_futures": quote_to_text(us_futures["sp500_futures"]),
+            "nasdaq_futures": quote_to_text(us_futures["nasdaq_futures"]),
+            "dow_futures": quote_to_text(us_futures["dow_futures"]),
+            "russell2000_futures": quote_to_text(us_futures["russell2000_futures"]),
+        },
+        "us_10y_yield": quote_to_text(global_indicators["us_10y_yield"]),
+        "dollar_index": quote_to_text(global_indicators["dollar_index"]),
+        "wti": quote_to_text(commodities["wti"]),
+        "brent": quote_to_text(commodities["brent"]),
+        "wti_brent": {
+            "wti": quote_to_text(commodities["wti"]),
+            "brent": quote_to_text(commodities["brent"]),
+        },
+        "gold": quote_to_text(commodities["gold"]),
+        "big_tech": {
+            "nvidia": quote_to_text(big_tech["nvidia"]),
+            "apple": quote_to_text(big_tech["apple"]),
+            "microsoft": quote_to_text(big_tech["microsoft"]),
+            "tesla": quote_to_text(big_tech["tesla"]),
+        },
+
+        # 아직 미연결 데이터
+        "foreign_spot_flow": "확인 필요 - 외국인 현물 수급은 2차 연결 예정",
+        "foreign_futures_flow": "확인 필요 - 외국인 선물 수급은 2차 연결 예정",
+        "institution_flow": "확인 필요 - 기관 수급은 2차 연결 예정",
+        "retail_flow": "확인 필요 - 개인 수급은 2차 연결 예정",
+        "leading_sectors_by_volume": "확인 필요 - 거래대금 상위 업종은 2차 연결 예정",
+        "asia_market_preopen": "확인 필요",
+        "domestic_premarket_news": "뉴스/공시 데이터 기반으로 확인",
+        "us_sector_flow": "확인 필요 - 미국 업종별 세부 흐름은 2차 연결 예정",
+    }
+
+    ok_count = 0
+    check_count = 0
+
+    for group_name in [
+        "korea_indices",
+        "korea_key_stocks",
+        "fx_rates",
+        "us_indices",
+        "us_futures",
+        "global_indicators",
+        "commodities",
+        "big_tech",
+    ]:
+        for item in market_data[group_name].values():
+            if item.get("status") == "ok":
+                ok_count += 1
+            else:
+                check_count += 1
+
+    market_data["fetch_summary"] = {
+        "success_count": ok_count,
+        "check_needed_count": check_count,
+    }
+
+    print(f"Yahoo Finance/yfinance 시장 데이터 수집 완료: 성공 {ok_count}개, 확인 필요 {check_count}개")
+
+    return market_data
+
+
+def build_market_data_status(report_mode):
+    return fetch_yfinance_market_data(report_mode)
 
 
 def build_data_packet(report_mode, report_config):
@@ -728,8 +1018,10 @@ def build_data_packet(report_mode, report_config):
         "opendart_disclosures": important_dart_disclosures,
         "market_data_status": build_market_data_status(report_mode),
         "important_note": (
-            "KOSPI/KOSDAQ 실시간 지수, 외국인·기관·개인 수급, 거래대금 상위 업종, "
-            "KOSPI200 선물 등은 아직 자동 수집되지 않습니다. "
+            "KOSPI/KOSDAQ, 삼성전자, SK하이닉스, 원/달러 환율, 미국 지수·선물, "
+            "금리·달러·유가·금 일부 데이터는 yfinance 기반으로 자동 수집됩니다. "
+            "무료 공개 데이터라 지연 시세일 수 있습니다. "
+            "외국인·기관·개인 수급, 거래대금 상위 업종, 실제 KOSPI200 선물은 아직 2차 연결 예정입니다. "
             "명확하지 않은 항목은 반드시 '확인 필요'로 표시하세요."
         ),
     }
