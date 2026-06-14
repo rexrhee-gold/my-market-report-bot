@@ -56,12 +56,13 @@ jobs:
           test -n "$SLACK_WEBHOOK_URL" || (echo "SLACK_WEBHOOK_URL 없음" && exit 1)
           test -n "$NOTION_TOKEN" || (echo "NOTION_TOKEN 없음" && exit 1)
           test -n "$NOTION_PARENT_PAGE_ID" || (echo "NOTION_PARENT_PAGE_ID 없음" && exit 1)
-          test -n "$ALPHAVANTAGE_KEY" || (echo "ALPHAVANTAGE_KEY 없음" && exit 1)        
+          test -n "$ALPHAVANTAGE_KEY" || (echo "ALPHAVANTAGE_KEY 없음" && exit 1)
           test -n "$OPENDART_API_KEY" || (echo "OPENDART_API_KEY 없음" && exit 1)
           echo "필수 Secrets 확인 완료"
 
-      - name: Run daily report
+      - name: Run morning report
         env:
+          REPORT_MODE: morning
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
