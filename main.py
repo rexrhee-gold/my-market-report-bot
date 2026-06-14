@@ -55,29 +55,27 @@ def now_kst():
 def since_utc(hours=24):
     return datetime.now(UTC) - timedelta(hours=hours)
 
+
 def alpha_time_from(hours=72):
     """
     Alpha Vantage NEWS_SENTIMENT API용 시간 형식입니다.
     예: 20260614T0700
     """
     target_time = datetime.now(UTC) - timedelta(hours=hours)
-    return target_time.strftime("%Y%m%dT%H%M")    
-
-def now_kst():
-    return datetime.now(KST)
-
-
-def since_utc(hours=24):
-    return datetime.now(UTC) - timedelta(hours=hours)
+    return target_time.strftime("%Y%m%dT%H%M")
 
 
 def yyyymmdd_kst(days_ago=0):
+    """
+    OpenDART API용 날짜 형식입니다.
+    예: 20260614
+    """
     target_date = now_kst() - timedelta(days=days_ago)
     return target_date.strftime("%Y%m%d")
-    
+
 
 # =========================
-# 관심종목 함수
+# 파일 로드 함수
 # =========================
 
 def load_watchlist():
@@ -110,8 +108,41 @@ def load_watchlist():
     return watchlist
 
 
+def load_dart_watchlist():
+    """
+    dart_watchlist.txt 파일에서 한국 종목코드 또는 회사명을 읽습니다.
+    종목코드 예:
+    005930
+    000660
+    """
+    path = "dart_watchlist.txt"
+
+    if not os.path.exists(path):
+        print("dart_watchlist.txt 파일이 없습니다. OpenDART 관심 공시 수집은 건너뜁니다.")
+        return []
+
+    with open(path, "r", encoding="utf-8") as file:
+        lines = file.readlines()
+
+    watchlist = []
+
+    for line in lines:
+        item = line.strip()
+
+        if not item:
+            continue
+
+        if item.startswith("#"):
+            continue
+
+        watchlist.append(item)
+
+    print(f"OpenDART 관심 기업 {len(watchlist)}개 로드 완료")
+    return watchlist
+
+
 # =========================
-# 뉴스 수집 NEWSAPI
+# 뉴스 수집: NewsAPI
 # =========================
 
 def fetch_newsapi():
@@ -150,7 +181,6 @@ def fetch_newsapi():
     print("NewsAPI message:", data.get("message"))
 
     articles = data.get("articles", [])
-
     result = []
 
     for article in articles:
@@ -176,7 +206,7 @@ def fetch_newsapi():
 
 
 # =========================
-# 뉴스 수집 Alpha Vantage NEWS
+# 뉴스 수집: Alpha Vantage NEWS_SENTIMENT
 # =========================
 
 def fetch_alpha_vantage_news():
@@ -220,7 +250,6 @@ def fetch_alpha_vantage_news():
         return []
 
     feed = data.get("feed", [])
-
     result = []
 
     for item in feed:
@@ -230,10 +259,9 @@ def fetch_alpha_vantage_news():
         if not title or not article_url:
             continue
 
-        ticker_sentiment = item.get("ticker_sentiment", [])
-
         related_tickers = []
-        for ticker_item in ticker_sentiment[:10]:
+
+        for ticker_item in item.get("ticker_sentiment", [])[:10]:
             ticker = ticker_item.get("ticker")
             relevance_score = ticker_item.get("relevance_score")
             sentiment_label = ticker_item.get("ticker_sentiment_label")
@@ -281,60 +309,12 @@ def dedupe_articles(articles):
     return result
 
 
-def build_data_packet():
-    articles = []
-    watchlist = load_watchlist()
-
-    newsapi_articles = fetch_newsapi()
-    alpha_articles = fetch_alpha_vantage_news()
-    dart_disclosures = fetch_opendart_disclosures()
-    important_dart_disclosures = filter_important_dart_disclosures(
-    dart_disclosures,
-    max_items=30,
-)
-    dart_grade_counts = count_dart_grades([
-    score_dart_disclosure(item) for item in dart_disclosures
-])
-    articles.extend(newsapi_articles)
-    articles.extend(alpha_articles)
-
-    articles = dedupe_articles(articles)
-
-    data_packet = {
-        "generated_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S KST"),
-        "article_count": len(articles),
-        "newsapi_article_count": len(newsapi_articles),
-        "alpha_vantage_article_count": len(alpha_articles),
-        "opendart_disclosure_count": len(dart_disclosures),
-        "opendart_important_disclosure_count": len(important_dart_disclosures),
-        "opendart_grade_counts": dart_grade_counts,
-        "watchlist_count": len(watchlist),
-        "watchlist": watchlist,
-        "articles": articles[:100],
-        "opendart_disclosures": important_dart_disclosures,
-        "opendart_all_disclosures_sample": dart_disclosures[:20],
-        "instruction": "NewsAPI, Alpha Vantage, OpenDART 중요 공시 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
-    }
-
-    print(f"NewsAPI 기사 수: {len(newsapi_articles)}개")
-    print(f"Alpha Vantage 기사 수: {len(alpha_articles)}개")
-    print(f"OpenDART 전체 공시 수: {len(dart_disclosures)}개")
-    print(f"OpenDART 중요 공시 수: {len(important_dart_disclosures)}개")
-    print(f"OpenDART 등급별 공시 수: {dart_grade_counts}")
-    print(f"최종 기사 수: {len(articles)}개")
-    print(f"관심 종목 수: {len(watchlist)}개")
-
-    return data_packet
-
-
-
 # =========================
 # OpenDART 중요 공시 필터링
 # =========================
 
 DART_GRADE_KEYWORDS = {
     "A": [
-        # 즉시 확인 필요
         "상장폐지",
         "거래정지",
         "관리종목",
@@ -357,7 +337,6 @@ DART_GRADE_KEYWORDS = {
         "경영권",
     ],
     "B": [
-        # 중요하지만 해석 필요
         "영업실적",
         "잠정실적",
         "매출액",
@@ -382,7 +361,6 @@ DART_GRADE_KEYWORDS = {
         "출자",
     ],
     "C": [
-        # 참고용
         "대표이사",
         "임원",
         "주주총회",
@@ -395,7 +373,6 @@ DART_GRADE_KEYWORDS = {
         "감사보고서",
     ],
 }
-
 
 DART_GRADE_SCORE = {
     "A": 100,
@@ -419,37 +396,39 @@ def score_dart_disclosure(disclosure):
     grade = "기타"
 
     for current_grade in ["A", "B", "C"]:
+        current_matches = []
+
         for keyword in DART_GRADE_KEYWORDS[current_grade]:
             if keyword.lower() in report_name.lower():
-                matched_keywords.append(keyword)
+                current_matches.append(keyword)
 
-        if matched_keywords:
+        if current_matches:
             grade = current_grade
+            matched_keywords = current_matches
             break
 
-    disclosure["importance_grade"] = grade
-    disclosure["importance_score"] = DART_GRADE_SCORE.get(grade, 0)
-    disclosure["matched_keywords"] = matched_keywords
+    scored = dict(disclosure)
+    scored["importance_grade"] = grade
+    scored["importance_score"] = DART_GRADE_SCORE.get(grade, 0)
+    scored["matched_keywords"] = matched_keywords
 
-    return disclosure
+    return scored
 
 
-def filter_important_dart_disclosures(disclosures, max_items=30):
+def score_all_dart_disclosures(disclosures):
+    return [score_dart_disclosure(item) for item in disclosures]
+
+
+def filter_important_dart_disclosures(scored_disclosures, max_items=30):
     """
     OpenDART 공시 중 A/B/C 등급 공시만 선별합니다.
     기타 공시는 보고서 표에서는 제외합니다.
     """
-    scored = []
-
-    for disclosure in disclosures:
-        scored.append(score_dart_disclosure(disclosure))
-
     important = [
-        item for item in scored
+        item for item in scored_disclosures
         if item.get("importance_grade") in ["A", "B", "C"]
     ]
 
-    # A급 → B급 → C급 순서, 같은 등급 안에서는 최신 접수일 우선
     important.sort(
         key=lambda x: (
             x.get("importance_score", 0),
@@ -461,7 +440,7 @@ def filter_important_dart_disclosures(disclosures, max_items=30):
     return important[:max_items]
 
 
-def count_dart_grades(disclosures):
+def count_dart_grades(scored_disclosures):
     """
     OpenDART 공시 등급별 개수를 계산합니다.
     """
@@ -472,45 +451,16 @@ def count_dart_grades(disclosures):
         "기타": 0,
     }
 
-    for disclosure in disclosures:
+    for disclosure in scored_disclosures:
         grade = disclosure.get("importance_grade", "기타")
         counts[grade] = counts.get(grade, 0) + 1
 
     return counts
 
 
-def load_dart_watchlist():
-    """
-    dart_watchlist.txt 파일에서 한국 종목코드 또는 회사명을 읽습니다.
-    종목코드 예:
-    005930
-    000660
-    """
-    path = "dart_watchlist.txt"
-
-    if not os.path.exists(path):
-        print("dart_watchlist.txt 파일이 없습니다. OpenDART 관심 공시 수집은 건너뜁니다.")
-        return []
-
-    with open(path, "r", encoding="utf-8") as file:
-        lines = file.readlines()
-
-    watchlist = []
-
-    for line in lines:
-        item = line.strip()
-
-        if not item:
-            continue
-
-        if item.startswith("#"):
-            continue
-
-        watchlist.append(item)
-
-    print(f"OpenDART 관심 기업 {len(watchlist)}개 로드 완료")
-    return watchlist
-
+# =========================
+# OpenDART 공시 수집
+# =========================
 
 def fetch_dart_corp_codes():
     """
@@ -532,7 +482,6 @@ def fetch_dart_corp_codes():
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
 
-    # 인증키 오류 등으로 ZIP이 아닌 응답이 올 수 있으므로 확인
     content_type = response.headers.get("Content-Type", "")
 
     if "zip" not in content_type.lower() and not response.content.startswith(b"PK"):
@@ -569,20 +518,16 @@ def find_dart_companies(corp_codes, watchlist):
 
     for target in watchlist:
         target_clean = target.strip()
-
         matched = None
 
         for company in corp_codes:
             stock_code = (company.get("stock_code") or "").strip()
             corp_name = (company.get("corp_name") or "").strip()
 
-            # 6자리 종목코드로 매칭
             if target_clean.isdigit() and len(target_clean) == 6:
                 if stock_code == target_clean:
                     matched = company
                     break
-
-            # 회사명으로 매칭
             else:
                 if target_clean.lower() == corp_name.lower():
                     matched = company
@@ -653,7 +598,6 @@ def fetch_opendart_disclosures():
         status = data.get("status")
         message = data.get("message")
 
-        # 000: 정상, 013: 조회된 데이터 없음
         if status == "013":
             print(f"OpenDART 공시 없음: {corp_name}({stock_code})")
             continue
@@ -684,6 +628,191 @@ def fetch_opendart_disclosures():
 
 
 # =========================
+# 위험도 점수
+# =========================
+
+def get_risk_level(score):
+    """
+    위험도 점수를 사람이 읽기 쉬운 등급으로 변환합니다.
+    """
+    if score <= 3:
+        return "안정"
+    elif score <= 6:
+        return "보통"
+    elif score <= 8:
+        return "주의"
+    else:
+        return "고위험"
+
+
+def calculate_market_risk(data_packet):
+    """
+    수집된 뉴스, Alpha Vantage 감성, OpenDART 공시를 바탕으로
+    오늘의 시장 위험도 점수를 계산합니다.
+
+    점수 기준:
+    1~3점: 안정
+    4~6점: 보통
+    7~8점: 주의
+    9~10점: 고위험
+    """
+    score = 4
+    reasons = []
+
+    article_count = data_packet.get("article_count", 0)
+    alpha_count = data_packet.get("alpha_vantage_article_count", 0)
+    opendart_total_count = data_packet.get("opendart_disclosure_count", 0)
+    opendart_important_count = data_packet.get("opendart_important_disclosure_count", 0)
+
+    grade_counts = data_packet.get("opendart_grade_counts", {})
+    a_count = grade_counts.get("A", 0)
+    b_count = grade_counts.get("B", 0)
+
+    articles = data_packet.get("articles", [])
+
+    if a_count >= 3:
+        score += 3
+        reasons.append(f"OpenDART A급 공시가 {a_count}건 발생했습니다.")
+    elif a_count >= 1:
+        score += 2
+        reasons.append(f"OpenDART A급 공시가 {a_count}건 발생했습니다.")
+
+    if b_count >= 10:
+        score += 2
+        reasons.append(f"OpenDART B급 공시가 {b_count}건으로 많습니다.")
+    elif b_count >= 5:
+        score += 1
+        reasons.append(f"OpenDART B급 공시가 {b_count}건 발생했습니다.")
+
+    if opendart_important_count >= 20:
+        score += 2
+        reasons.append(f"중요 공시가 {opendart_important_count}건으로 많습니다.")
+    elif opendart_important_count >= 10:
+        score += 1
+        reasons.append(f"중요 공시가 {opendart_important_count}건 발생했습니다.")
+
+    alpha_articles = [
+        item for item in articles
+        if item.get("provider") == "Alpha Vantage"
+    ]
+
+    bearish_count = 0
+
+    for item in alpha_articles:
+        label = (item.get("overall_sentiment_label") or "").lower()
+
+        if "bearish" in label:
+            bearish_count += 1
+
+    if alpha_count > 0:
+        bearish_ratio = bearish_count / alpha_count
+
+        if bearish_ratio >= 0.4:
+            score += 2
+            reasons.append(f"Alpha Vantage 부정 감성 뉴스 비중이 높습니다. Bearish {bearish_count}/{alpha_count}건")
+        elif bearish_ratio >= 0.2:
+            score += 1
+            reasons.append(f"Alpha Vantage 부정 감성 뉴스가 일부 확인됩니다. Bearish {bearish_count}/{alpha_count}건")
+
+    if article_count < 10:
+        score += 1
+        reasons.append("수집된 뉴스가 적어 시장 해석의 불확실성이 있습니다.")
+
+    if opendart_total_count >= 100:
+        score += 1
+        reasons.append(f"OpenDART 전체 공시가 {opendart_total_count}건으로 많아 이벤트 점검이 필요합니다.")
+
+    score = max(1, min(10, score))
+
+    if not reasons:
+        reasons.append("특별한 고위험 신호는 제한적입니다.")
+
+    return {
+        "score": score,
+        "level": get_risk_level(score),
+        "reasons": reasons[:5],
+    }
+
+
+def build_risk_section(data_packet):
+    """
+    보고서 맨 위에 붙일 위험도 점수 섹션을 만듭니다.
+    """
+    risk = data_packet.get("market_risk", {})
+
+    score = risk.get("score", "확인 필요")
+    level = risk.get("level", "확인 필요")
+    reasons = risk.get("reasons", [])
+
+    section = "## 오늘의 위험도 점수\n\n"
+    section += f"- 점수: {score} / 10\n"
+    section += f"- 판단: {level}\n"
+    section += "- 근거:\n"
+
+    for reason in reasons:
+        section += f"  - {reason}\n"
+
+    section += "\n"
+
+    return section
+
+
+# =========================
+# 데이터 패킷 생성
+# =========================
+
+def build_data_packet():
+    articles = []
+    watchlist = load_watchlist()
+
+    newsapi_articles = fetch_newsapi()
+    alpha_articles = fetch_alpha_vantage_news()
+    dart_disclosures = fetch_opendart_disclosures()
+
+    scored_dart_disclosures = score_all_dart_disclosures(dart_disclosures)
+    important_dart_disclosures = filter_important_dart_disclosures(
+        scored_dart_disclosures,
+        max_items=30,
+    )
+    dart_grade_counts = count_dart_grades(scored_dart_disclosures)
+
+    articles.extend(newsapi_articles)
+    articles.extend(alpha_articles)
+    articles = dedupe_articles(articles)
+
+    data_packet = {
+        "generated_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S KST"),
+        "article_count": len(articles),
+        "newsapi_article_count": len(newsapi_articles),
+        "alpha_vantage_article_count": len(alpha_articles),
+        "opendart_disclosure_count": len(dart_disclosures),
+        "opendart_important_disclosure_count": len(important_dart_disclosures),
+        "opendart_grade_counts": dart_grade_counts,
+        "watchlist_count": len(watchlist),
+        "watchlist": watchlist,
+        "articles": articles[:100],
+        "opendart_disclosures": important_dart_disclosures,
+        "opendart_all_disclosures_sample": scored_dart_disclosures[:20],
+        "instruction": "NewsAPI, Alpha Vantage, OpenDART 중요 공시 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
+    }
+
+    market_risk = calculate_market_risk(data_packet)
+    data_packet["market_risk"] = market_risk
+
+    print(f"NewsAPI 기사 수: {len(newsapi_articles)}개")
+    print(f"Alpha Vantage 기사 수: {len(alpha_articles)}개")
+    print(f"OpenDART 전체 공시 수: {len(dart_disclosures)}개")
+    print(f"OpenDART 중요 공시 수: {len(important_dart_disclosures)}개")
+    print(f"OpenDART 등급별 공시 수: {dart_grade_counts}")
+    print(f"최종 기사 수: {len(articles)}개")
+    print(f"관심 종목 수: {len(watchlist)}개")
+    print(f"오늘의 위험도 점수: {market_risk['score']} / 10")
+    print(f"오늘의 위험도 판단: {market_risk['level']}")
+
+    return data_packet
+
+
+# =========================
 # OpenAI 보고서 생성
 # =========================
 
@@ -707,10 +836,9 @@ def generate_report(data_packet):
     expert_prompt = load_expert_prompt()
 
     user_input = f"""
-    
 오늘 날짜: {now_kst().strftime('%Y-%m-%d %H:%M KST')}
 
-아래는 최근 24시간 내 수집한 시장 관련 뉴스 데이터입니다.
+아래는 최근 72시간 내 수집한 시장 관련 데이터입니다.
 기사 전문이 아니라 제목, 요약, 출처, URL, 발행시각 중심으로 제공합니다.
 
 DATA:
@@ -726,19 +854,17 @@ DATA:
 - 가능한 경우 기사 출처와 URL을 함께 표시하세요.
 - 투자 권유가 아니라 참고용 분석이라는 문구를 포함하세요.
 
+위험도 점수 활용 요구사항:
+- data_packet 안의 market_risk를 참고하세요.
+- 위험도 점수는 Python 코드가 보고서 맨 위에 자동 추가하므로 본문에서 별도 섹션으로 반복하지 마세요.
+- 다만 리스크 요인과 오늘 체크리스트에는 위험도 점수의 근거를 반영하세요.
+
 OpenDART 공시 활용 요구사항:
-- data_packet 안의 opendart_disclosures 항목은 중요 키워드 기준으로 선별된 공시입니다.
+- data_packet 안의 opendart_disclosures 항목은 중요도 A/B/C 기준으로 선별된 공시입니다.
 - OpenDART 공시는 한국 기업 분석에서 공식 자료로 취급하세요.
 - 중요 공시가 있으면 관심 종목 영향 분석과 리스크 요인에 반영하세요.
 - 공시 제목만 보고 과도하게 해석하지 말고, 확인이 필요한 부분은 “공시 원문 확인 필요”라고 표시하세요.
-- 한국 기업 공시 체크 섹션은 Python 코드가 보고서 맨 마지막에 자동으로 추가하므로, 본문에서는 중복 표를 만들지 마세요.
-
-OpenDART 공시 출력 위치 규칙:
-- "## 한국 기업 공시 체크" 섹션은 반드시 보고서의 맨 마지막에 배치하세요.
-- "## 출처 및 확인 필요 사항" 섹션이 있다면, 그 섹션보다도 뒤에 배치하세요.
-- 보고서의 마지막 섹션 제목은 반드시 "## 한국 기업 공시 체크"여야 합니다.
-- data_packet 안의 opendart_disclosures 개수가 1개 이상이면 이 섹션을 생략하지 마세요.
-
+- 한국 기업 공시 체크 섹션은 Python 코드가 보고서 맨 마지막에 자동으로 추가하므로 본문에서는 중복 표를 만들지 마세요.
 
 Alpha Vantage 데이터 활용 요구사항:
 - provider가 "Alpha Vantage"인 뉴스는 감성 분석 정보를 함께 참고하세요.
@@ -775,7 +901,7 @@ Notion 저장 형식 요구사항:
 
     if not report or not report.strip():
         raise ValueError("OpenAI 응답이 비어 있습니다.")
-    
+
     print("OpenAI 보고서 생성 완료")
     return report
 
@@ -856,7 +982,7 @@ def build_opendart_section(data_packet):
 
     return section
 
-    
+
 # =========================
 # 이메일 발송
 # =========================
@@ -894,7 +1020,6 @@ def send_email(report):
 def extract_section_lines(report, section_title, max_lines=8):
     """
     보고서에서 특정 섹션의 핵심 줄만 뽑습니다.
-    예: '오늘 한 줄 요약', '핵심 이슈 5개', '관심 종목 영향 분석'
     """
     lines = report.splitlines()
     collecting = False
@@ -906,30 +1031,22 @@ def extract_section_lines(report, section_title, max_lines=8):
         if not raw_line:
             continue
 
-        # 원하는 섹션 시작
         if raw_line.startswith("## ") and section_title in raw_line:
             collecting = True
             continue
 
-        # 다음 큰 섹션이 나오면 중단
         if collecting and raw_line.startswith("## "):
             break
 
         if collecting:
             cleaned = raw_line.replace("**", "").strip()
-
-            # Markdown 제목 기호 정리
             cleaned = cleaned.replace("### ", "").strip()
-
-            # 목록 기호 정리
             cleaned = cleaned.lstrip("-").strip()
             cleaned = cleaned.lstrip("*").strip()
 
-            # Markdown 표 구분선 제거
             if cleaned.startswith("|---") or cleaned.startswith("| ---"):
                 continue
 
-            # 너무 의미 없는 줄 제거
             if cleaned in ["|", "---"]:
                 continue
 
@@ -951,7 +1068,6 @@ def truncate_slack_message(message, max_chars=9000):
 
     shortened = message[:max_chars]
 
-    # 문장 중간에서 끊기보다 마지막 줄 기준으로 자르기
     if "\n" in shortened:
         shortened = shortened.rsplit("\n", 1)[0]
 
@@ -964,6 +1080,11 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
     Slack에 보낼 확장 요약 메시지를 만듭니다.
     """
     data_packet = data_packet or {}
+
+    market_risk = data_packet.get("market_risk", {})
+    risk_score = market_risk.get("score", "확인 필요")
+    risk_level = market_risk.get("level", "확인 필요")
+    risk_reasons = market_risk.get("reasons", [])
 
     one_line_summary = extract_section_lines(report, "오늘 한 줄 요약", max_lines=6)
     key_issues = extract_section_lines(report, "핵심 이슈 5개", max_lines=12)
@@ -988,7 +1109,13 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
 
     message = "📈 *오늘의 증시 분석 보고서 생성 완료*\n\n"
 
-    message += "*1. 오늘 한 줄 요약*\n"
+    message += "*오늘의 위험도 점수*\n"
+    message += f"• {risk_score} / 10 · {risk_level}\n"
+
+    for reason in risk_reasons[:3]:
+        message += f"• {reason}\n"
+
+    message += "\n*1. 오늘 한 줄 요약*\n"
     for line in one_line_summary:
         message += f"• {line}\n"
 
@@ -1037,9 +1164,10 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
 
     return truncate_slack_message(message, max_chars=9000)
 
+
 def send_slack(report, data_packet=None, notion_url=None):
     """
-    Slack에는 전체 보고서가 아니라 짧은 요약 메시지만 보냅니다.
+    Slack에는 전체 보고서가 아니라 요약 메시지를 보냅니다.
     """
     if not SLACK_WEBHOOK_URL:
         print("SLACK_WEBHOOK_URL이 없어서 Slack 발송을 건너뜁니다.")
@@ -1069,9 +1197,8 @@ def send_slack(report, data_packet=None, notion_url=None):
     print("Slack 요약 메시지 발송 완료")
 
 
-
 # =========================
-# Notion 저장 - 개선 버전
+# Notion 저장
 # =========================
 
 def split_text(text, size=1800):
@@ -1098,9 +1225,6 @@ def rich_text(text):
 def make_text_block(block_type, text):
     """
     Notion 텍스트 블록을 만듭니다.
-    block_type 예시:
-    paragraph, heading_1, heading_2, heading_3,
-    bulleted_list_item, numbered_list_item, quote
     """
     return {
         "object": "block",
@@ -1127,26 +1251,13 @@ def clean_markdown_text(text):
     Markdown 기호를 Notion에 넣기 좋게 약간 정리합니다.
     """
     text = text.strip()
-
-    # 굵게 표시용 ** 제거
     text = text.replace("**", "")
-
     return text
 
 
 def markdown_to_notion_blocks(markdown_text):
     """
     OpenAI가 만든 Markdown 보고서를 Notion 블록으로 변환합니다.
-
-    변환 규칙:
-    # 제목      → heading_1
-    ## 제목     → heading_2
-    ### 제목    → heading_3
-    - 항목      → bulleted_list_item
-    1. 항목     → numbered_list_item
-    > 문장      → quote
-    ---        → divider
-    일반 문장   → paragraph
     """
     blocks = []
 
@@ -1194,12 +1305,9 @@ def markdown_to_notion_blocks(markdown_text):
             text = raw_line.replace("> ", "", 1)
 
         text = clean_markdown_text(text)
-
-        # 너무 긴 줄은 여러 블록으로 나눕니다.
         chunks = split_text(text, size=1800)
 
         for index, chunk in enumerate(chunks):
-            # 제목이 너무 길어서 잘린 경우, 첫 줄만 제목으로 두고 나머지는 paragraph로 처리
             if index == 0:
                 blocks.append(make_text_block(block_type, chunk))
             else:
@@ -1211,7 +1319,6 @@ def markdown_to_notion_blocks(markdown_text):
 def append_blocks_to_notion_page(page_id, blocks, headers):
     """
     블록이 많을 경우 Notion 페이지에 나눠서 추가합니다.
-    Notion API는 한 번에 너무 많은 children을 넣으면 실패할 수 있으므로 batch 처리합니다.
     """
     batch_size = 80
 
@@ -1243,8 +1350,13 @@ def send_notion(report, data_packet=None):
 
     created_at = now_kst()
     title = f"증시 분석 보고서 - {created_at.strftime('%Y-%m-%d %H:%M KST')}"
-    
+
     data_packet = data_packet or {}
+
+    market_risk = data_packet.get("market_risk", {})
+    risk_score = market_risk.get("score", "확인 필요")
+    risk_level = market_risk.get("level", "확인 필요")
+    risk_reasons = market_risk.get("reasons", [])
 
     newsapi_count = data_packet.get("newsapi_article_count", 0)
     alpha_count = data_packet.get("alpha_vantage_article_count", 0)
@@ -1267,14 +1379,25 @@ def send_notion(report, data_packet=None):
         "Content-Type": "application/json",
     }
 
-    # Notion 페이지 맨 위에 들어갈 메타 정보
+    risk_blocks = [
+        make_text_block("heading_2", "오늘의 위험도 점수"),
+        make_text_block("paragraph", f"{risk_score} / 10 · {risk_level}"),
+    ]
+
+    for reason in risk_reasons[:5]:
+        risk_blocks.append(
+            make_text_block("bulleted_list_item", reason)
+        )
+
+    risk_blocks.append(make_divider_block())
+
     intro_blocks = [
         make_text_block("heading_1", title),
         make_text_block("paragraph", f"생성 시각: {created_at.strftime('%Y-%m-%d %H:%M:%S KST')}"),
         make_text_block("paragraph", "자동 생성된 증시 분석 보고서입니다."),
         make_text_block("paragraph", "주의: 이 보고서는 투자 권유가 아니라 참고용 분석 자료입니다."),
         make_divider_block(),
-
+    ] + risk_blocks + [
         make_text_block("heading_2", "수집 데이터 요약"),
         make_text_block("bulleted_list_item", f"NewsAPI 기사: {newsapi_count}개"),
         make_text_block("bulleted_list_item", f"Alpha Vantage 기사: {alpha_count}개"),
@@ -1286,13 +1409,9 @@ def send_notion(report, data_packet=None):
         make_divider_block(),
     ]
 
-    # OpenAI 보고서 본문을 Notion 블록으로 변환
     report_blocks = markdown_to_notion_blocks(report)
-
     all_blocks = intro_blocks + report_blocks
 
-    # 처음 페이지 생성 시에는 일부 블록만 넣고,
-    # 나머지는 append API로 추가합니다.
     first_blocks = all_blocks[:80]
     remaining_blocks = all_blocks[80:]
 
@@ -1343,6 +1462,7 @@ def send_notion(report, data_packet=None):
 
     return notion_url
 
+
 # =========================
 # 메인 실행
 # =========================
@@ -1360,6 +1480,7 @@ def main():
     if not report:
         raise ValueError("OpenAI 보고서 생성 결과가 비어 있습니다.")
 
+    report = build_risk_section(data_packet) + report
     report = report + build_opendart_section(data_packet)
 
     send_email(report)
