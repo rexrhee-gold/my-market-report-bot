@@ -690,10 +690,10 @@ def send_email(report):
 # Slack 발송
 # =========================
 
-def extract_section_lines(report, section_title, max_lines=5):
+def extract_section_lines(report, section_title, max_lines=8):
     """
     보고서에서 특정 섹션의 핵심 줄만 뽑습니다.
-    예: '오늘 한 줄 요약', '리스크 요인'
+    예: '오늘 한 줄 요약', '핵심 이슈 5개', '관심 종목 영향 분석'
     """
     lines = report.splitlines()
     collecting = False
@@ -705,17 +705,32 @@ def extract_section_lines(report, section_title, max_lines=5):
         if not raw_line:
             continue
 
+        # 원하는 섹션 시작
         if raw_line.startswith("## ") and section_title in raw_line:
             collecting = True
             continue
 
+        # 다음 큰 섹션이 나오면 중단
         if collecting and raw_line.startswith("## "):
             break
 
         if collecting:
             cleaned = raw_line.replace("**", "").strip()
+
+            # Markdown 제목 기호 정리
+            cleaned = cleaned.replace("### ", "").strip()
+
+            # 목록 기호 정리
             cleaned = cleaned.lstrip("-").strip()
             cleaned = cleaned.lstrip("*").strip()
+
+            # Markdown 표 구분선 제거
+            if cleaned.startswith("|---") or cleaned.startswith("| ---"):
+                continue
+
+            # 너무 의미 없는 줄 제거
+            if cleaned in ["|", "---"]:
+                continue
 
             if cleaned:
                 result.append(cleaned)
@@ -726,15 +741,35 @@ def extract_section_lines(report, section_title, max_lines=5):
     return result
 
 
+def truncate_slack_message(message, max_chars=9000):
+    """
+    Slack 메시지가 너무 길어지는 것을 방지합니다.
+    """
+    if len(message) <= max_chars:
+        return message
+
+    shortened = message[:max_chars]
+
+    # 문장 중간에서 끊기보다 마지막 줄 기준으로 자르기
+    if "\n" in shortened:
+        shortened = shortened.rsplit("\n", 1)[0]
+
+    shortened += "\n\n...(Slack 요약이 길어 일부 생략했습니다. 전체 보고서는 Notion에서 확인하세요.)"
+    return shortened
+
+
 def build_slack_summary(report, data_packet=None, notion_url=None):
     """
-    Slack에 보낼 짧은 요약 메시지를 만듭니다.
+    Slack에 보낼 확장 요약 메시지를 만듭니다.
     """
     data_packet = data_packet or {}
 
-    one_line_summary = extract_section_lines(report, "오늘 한 줄 요약", max_lines=5)
-    risk_lines = extract_section_lines(report, "리스크 요인", max_lines=3)
-    checklist_lines = extract_section_lines(report, "오늘 체크리스트", max_lines=3)
+    one_line_summary = extract_section_lines(report, "오늘 한 줄 요약", max_lines=6)
+    key_issues = extract_section_lines(report, "핵심 이슈 5개", max_lines=12)
+    watchlist_lines = extract_section_lines(report, "관심 종목 영향 분석", max_lines=8)
+    risk_lines = extract_section_lines(report, "리스크 요인", max_lines=6)
+    dart_lines = extract_section_lines(report, "한국 기업 공시 체크", max_lines=8)
+    checklist_lines = extract_section_lines(report, "오늘 체크리스트", max_lines=5)
 
     if not one_line_summary:
         one_line_summary = ["보고서 생성 완료. 전체 내용은 Notion 또는 이메일에서 확인하세요."]
@@ -747,9 +782,34 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
 
     message = "📈 *오늘의 증시 분석 보고서 생성 완료*\n\n"
 
-    message += "*오늘 한 줄 요약*\n"
+    message += "*1. 오늘 한 줄 요약*\n"
     for line in one_line_summary:
         message += f"• {line}\n"
+
+    if key_issues:
+        message += "\n*2. 핵심 이슈*\n"
+        for line in key_issues:
+            message += f"• {line}\n"
+
+    if watchlist_lines:
+        message += "\n*3. 관심 종목 영향 분석*\n"
+        for line in watchlist_lines:
+            message += f"• {line}\n"
+
+    if risk_lines:
+        message += "\n*4. 주요 리스크*\n"
+        for line in risk_lines:
+            message += f"• {line}\n"
+
+    if dart_lines:
+        message += "\n*5. 한국 기업 공시 체크*\n"
+        for line in dart_lines:
+            message += f"• {line}\n"
+
+    if checklist_lines:
+        message += "\n*6. 오늘 체크리스트*\n"
+        for line in checklist_lines:
+            message += f"• {line}\n"
 
     message += "\n*수집 데이터*\n"
     message += f"• NewsAPI: {newsapi_count}개\n"
@@ -757,16 +817,6 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
     message += f"• OpenDART 공시: {opendart_count}개\n"
     message += f"• 최종 뉴스 기사: {total_article_count}개\n"
     message += f"• 관심 종목: {watchlist_count}개\n"
-
-    if risk_lines:
-        message += "\n*주요 리스크*\n"
-        for line in risk_lines:
-            message += f"• {line}\n"
-
-    if checklist_lines:
-        message += "\n*오늘 체크리스트*\n"
-        for line in checklist_lines:
-            message += f"• {line}\n"
 
     message += "\n*전체 보고서*\n"
 
@@ -777,8 +827,7 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
 
     message += "\n_이 보고서는 투자 권유가 아니라 참고용 분석 자료입니다._"
 
-    return message
-
+    return truncate_slack_message(message, max_chars=9000)
 
 def send_slack(report, data_packet=None, notion_url=None):
     """
