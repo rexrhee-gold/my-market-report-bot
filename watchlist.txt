@@ -9,5 +9,11 @@ Google
 KOSPI
 KOSDAQ
 USD/KRW
-WTI
+WTI Oil
 Gold
+Bitcoin
+Hyundai Motor
+Kia
+NAVER
+Kakao
+LG Energy Solution
