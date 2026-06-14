@@ -288,7 +288,10 @@ def build_data_packet():
     newsapi_articles = fetch_newsapi()
     alpha_articles = fetch_alpha_vantage_news()
     dart_disclosures = fetch_opendart_disclosures()
-
+    important_dart_disclosures = filter_important_dart_disclosures(
+    dart_disclosures,
+    max_items=30,
+)
     articles.extend(newsapi_articles)
     articles.extend(alpha_articles)
 
@@ -300,16 +303,19 @@ def build_data_packet():
         "newsapi_article_count": len(newsapi_articles),
         "alpha_vantage_article_count": len(alpha_articles),
         "opendart_disclosure_count": len(dart_disclosures),
+        "opendart_important_disclosure_count": len(important_dart_disclosures),
         "watchlist_count": len(watchlist),
         "watchlist": watchlist,
         "articles": articles[:100],
-        "opendart_disclosures": dart_disclosures[:100],
-        "instruction": "NewsAPI, Alpha Vantage, OpenDART 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
+        "opendart_disclosures": important_dart_disclosures,
+        "opendart_all_disclosures_sample": dart_disclosures[:20],
+        "instruction": "NewsAPI, Alpha Vantage, OpenDART 중요 공시 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
     }
 
     print(f"NewsAPI 기사 수: {len(newsapi_articles)}개")
     print(f"Alpha Vantage 기사 수: {len(alpha_articles)}개")
-    print(f"OpenDART 공시 수: {len(dart_disclosures)}개")
+    print(f"OpenDART 전체 공시 수: {len(dart_disclosures)}개")
+    print(f"OpenDART 중요 공시 수: {len(important_dart_disclosures)}개")
     print(f"최종 기사 수: {len(articles)}개")
     print(f"관심 종목 수: {len(watchlist)}개")
 
@@ -320,6 +326,118 @@ def build_data_packet():
 # =========================
 # OpenDART 공시 수집
 # =========================
+
+IMPORTANT_DART_KEYWORDS = [
+    # 실적 관련
+    "실적",
+    "영업실적",
+    "매출액",
+    "영업이익",
+    "잠정실적",
+    "결산실적",
+    "분기보고서",
+    "반기보고서",
+    "사업보고서",
+
+    # 자금 조달 / 주식 수
+    "유상증자",
+    "무상증자",
+    "전환사채",
+    "신주인수권",
+    "교환사채",
+    "사채권",
+    "CB",
+    "BW",
+
+    # 주주환원
+    "자기주식",
+    "자사주",
+    "배당",
+    "현금배당",
+    "주식배당",
+
+    # 계약 / 수주
+    "단일판매",
+    "공급계약",
+    "수주",
+    "계약체결",
+    "대규모",
+
+    # 지배구조 / 경영권
+    "최대주주",
+    "대표이사",
+    "임원",
+    "경영권",
+    "주주총회",
+    "이사회",
+
+    # 구조 변화
+    "합병",
+    "분할",
+    "영업양수",
+    "영업양도",
+    "타법인",
+    "출자",
+    "취득",
+    "처분",
+
+    # 리스크
+    "소송",
+    "횡령",
+    "배임",
+    "감사의견",
+    "거래정지",
+    "상장폐지",
+    "불성실공시",
+    "관리종목",
+]
+
+def score_dart_disclosure(disclosure):
+    """
+    OpenDART 공시의 중요도를 점수화합니다.
+    공시명에 중요한 키워드가 포함될수록 점수가 올라갑니다.
+    """
+    report_name = disclosure.get("report_name") or ""
+    score = 0
+    matched_keywords = []
+
+    for keyword in IMPORTANT_DART_KEYWORDS:
+        if keyword.lower() in report_name.lower():
+            score += 1
+            matched_keywords.append(keyword)
+
+    disclosure["importance_score"] = score
+    disclosure["matched_keywords"] = matched_keywords
+
+    return disclosure
+
+
+def filter_important_dart_disclosures(disclosures, max_items=30):
+    """
+    OpenDART 공시 중 중요한 공시만 선별합니다.
+    중요 키워드가 포함된 공시를 우선 표시합니다.
+    """
+    scored = []
+
+    for disclosure in disclosures:
+        scored.append(score_dart_disclosure(disclosure))
+
+    important = [
+        item for item in scored
+        if item.get("importance_score", 0) > 0
+    ]
+
+    # 중요도 높은 순, 최신 접수일 순으로 정렬
+    important.sort(
+        key=lambda x: (
+            x.get("importance_score", 0),
+            x.get("receipt_date") or ""
+        ),
+        reverse=True,
+    )
+
+    return important[:max_items]
+
 
 def load_dart_watchlist():
     """
@@ -549,6 +667,7 @@ def generate_report(data_packet):
     expert_prompt = load_expert_prompt()
 
     user_input = f"""
+    
 오늘 날짜: {now_kst().strftime('%Y-%m-%d %H:%M KST')}
 
 아래는 최근 24시간 내 수집한 시장 관련 뉴스 데이터입니다.
@@ -568,12 +687,11 @@ DATA:
 - 투자 권유가 아니라 참고용 분석이라는 문구를 포함하세요.
 
 OpenDART 공시 활용 요구사항:
-- data_packet 안의 opendart_disclosures 항목을 반드시 확인하세요.
-- OpenDART 공시는 한국 기업 분석에서 뉴스보다 우선순위가 높은 공식 자료로 취급하세요.
-- 공시가 있으면 회사명, 종목코드, 공시명, 접수일, 링크를 표로 정리하세요.
+- data_packet 안의 opendart_disclosures 항목은 중요 키워드 기준으로 선별된 공시입니다.
+- OpenDART 공시는 한국 기업 분석에서 공식 자료로 취급하세요.
+- 중요 공시가 있으면 관심 종목 영향 분석과 리스크 요인에 반영하세요.
 - 공시 제목만 보고 과도하게 해석하지 말고, 확인이 필요한 부분은 “공시 원문 확인 필요”라고 표시하세요.
-- 관심 종목과 연결되는 공시가 있으면 관심 종목 영향 분석에 반영하세요.
-- 공시가 없으면 “관심 기업 기준 최근 7일 OpenDART 주요 공시 없음”이라고 표시하세요.
+- 한국 기업 공시 체크 섹션은 Python 코드가 보고서 맨 마지막에 자동으로 추가하므로, 본문에서는 중복 표를 만들지 마세요.
 
 OpenDART 공시 출력 위치 규칙:
 - "## 한국 기업 공시 체크" 섹션은 반드시 보고서의 맨 마지막에 배치하세요.
@@ -624,34 +742,49 @@ Notion 저장 형식 요구사항:
 
 def build_opendart_section(data_packet):
     """
-    OpenDART 공시 데이터를 보고서 맨 마지막에 강제로 붙일 섹션으로 만듭니다.
+    OpenDART 중요 공시 데이터를 보고서 맨 마지막에 강제로 붙입니다.
+    전체 공시 중 중요 공시만 표로 보여주고,
+    나머지는 개수만 요약합니다.
     """
-    disclosures = data_packet.get("opendart_disclosures", [])
+    important_disclosures = data_packet.get("opendart_disclosures", [])
+    total_count = data_packet.get("opendart_disclosure_count", 0)
+    important_count = data_packet.get("opendart_important_disclosure_count", len(important_disclosures))
 
     section = "\n\n## 한국 기업 공시 체크\n\n"
 
-    if not disclosures:
+    section += f"- OpenDART 전체 공시 수: {total_count}개\n"
+    section += f"- 중요 키워드 기준 선별 공시 수: {important_count}개\n\n"
+
+    if not important_disclosures:
         section += "관심 기업 기준 최근 OpenDART 주요 공시 없음\n"
         return section
 
-    section += "| 회사 | 종목코드 | 공시명 | 접수일 | 해석 | 원문 링크 |\n"
-    section += "|---|---:|---|---|---|---|\n"
+    section += "| 회사 | 종목코드 | 공시명 | 접수일 | 중요 키워드 | 해석 | 원문 링크 |\n"
+    section += "|---|---:|---|---|---|---|---|\n"
 
-    for item in disclosures[:50]:
+    for item in important_disclosures[:30]:
         corp_name = item.get("corp_name") or ""
         stock_code = item.get("stock_code") or ""
         report_name = item.get("report_name") or ""
         receipt_date = item.get("receipt_date") or ""
         viewer_url = item.get("viewer_url") or ""
+        matched_keywords = item.get("matched_keywords") or []
+
+        keyword_text = ", ".join(matched_keywords) if matched_keywords else "확인 필요"
 
         section += (
             f"| {corp_name} "
             f"| {stock_code} "
             f"| {report_name} "
             f"| {receipt_date} "
+            f"| {keyword_text} "
             f"| 공시 원문 확인 필요 "
             f"| {viewer_url} |\n"
         )
+
+    if total_count > important_count:
+        other_count = total_count - important_count
+        section += f"\n기타 일반 공시 {other_count}개는 중요 키워드 기준에서 제외했습니다.\n"
 
     return section
 
