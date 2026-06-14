@@ -40,6 +40,9 @@ OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-5.5").strip()
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 ALPHAVANTAGE_KEY = os.getenv("ALPHAVANTAGE_KEY")
 OPENDART_API_KEY = os.getenv("OPENDART_API_KEY")
+OPENDART_ENABLED = (os.getenv("OPENDART_ENABLED") or "true").strip().lower() not in ["0", "false", "no", "off"]
+OPENDART_TIMEOUT = int(os.getenv("OPENDART_TIMEOUT") or "10")
+OPENDART_MAX_COMPANIES = int(os.getenv("OPENDART_MAX_COMPANIES") or "35")
 
 EMAIL_TO = os.getenv("EMAIL_TO")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -447,6 +450,17 @@ def filter_important_dart_disclosures(disclosures, max_items=30):
 
 
 def fetch_dart_corp_codes():
+    """
+    OpenDART 회사 고유번호를 수집합니다.
+
+    안정화:
+    - OpenDART 서버 지연/타임아웃이 발생해도 전체 보고서를 실패시키지 않습니다.
+    - 실패 시 빈 목록을 반환하고 뉴스·시장 데이터 중심으로 계속 진행합니다.
+    """
+    if not OPENDART_ENABLED:
+        print("OPENDART_ENABLED=false 이므로 OpenDART 회사 고유번호 수집을 건너뜁니다.")
+        return []
+
     if not OPENDART_API_KEY:
         print("OPENDART_API_KEY가 없습니다. 회사 고유번호 수집을 건너뜁니다.")
         return []
@@ -456,35 +470,48 @@ def fetch_dart_corp_codes():
 
     print("OpenDART 회사 고유번호 수집 시작")
 
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
+    try:
+        response = requests.get(url, params=params, timeout=OPENDART_TIMEOUT)
+        response.raise_for_status()
 
-    content_type = response.headers.get("Content-Type", "")
+        content_type = response.headers.get("Content-Type", "")
 
-    if "zip" not in content_type.lower() and not response.content.startswith(b"PK"):
-        print("OpenDART 회사 고유번호 응답이 ZIP이 아닙니다.")
-        print(response.text[:500])
+        if "zip" not in content_type.lower() and not response.content.startswith(b"PK"):
+            print("OpenDART 회사 고유번호 응답이 ZIP이 아닙니다. 공시 수집을 건너뜁니다.")
+            print(response.text[:300])
+            return []
+
+        zip_file = zipfile.ZipFile(io.BytesIO(response.content))
+        xml_data = zip_file.read("CORPCODE.xml").decode("utf-8")
+
+        root = ET.fromstring(xml_data)
+
+        corp_codes = []
+
+        for item in root.findall("list"):
+            corp_codes.append(
+                {
+                    "corp_code": item.findtext("corp_code"),
+                    "corp_name": item.findtext("corp_name"),
+                    "stock_code": item.findtext("stock_code"),
+                    "modify_date": item.findtext("modify_date"),
+                }
+            )
+
+        print(f"OpenDART 회사 고유번호 {len(corp_codes)}개 수집 완료")
+        return corp_codes
+
+    except requests.exceptions.Timeout:
+        print(f"OpenDART 회사 고유번호 수집 타임아웃: {OPENDART_TIMEOUT}초. 공시 수집을 건너뜁니다.")
         return []
 
-    zip_file = zipfile.ZipFile(io.BytesIO(response.content))
-    xml_data = zip_file.read("CORPCODE.xml").decode("utf-8")
+    except requests.exceptions.RequestException as error:
+        print(f"OpenDART 회사 고유번호 수집 네트워크 오류: {error}. 공시 수집을 건너뜁니다.")
+        return []
 
-    root = ET.fromstring(xml_data)
-
-    corp_codes = []
-
-    for item in root.findall("list"):
-        corp_codes.append(
-            {
-                "corp_code": item.findtext("corp_code"),
-                "corp_name": item.findtext("corp_name"),
-                "stock_code": item.findtext("stock_code"),
-                "modify_date": item.findtext("modify_date"),
-            }
-        )
-
-    print(f"OpenDART 회사 고유번호 {len(corp_codes)}개 수집 완료")
-    return corp_codes
+    except Exception as error:
+        print(f"OpenDART 회사 고유번호 처리 오류: {error}. 공시 수집을 건너뜁니다.")
+        return []
 
 
 def find_dart_companies(corp_codes, watchlist):
@@ -517,6 +544,17 @@ def find_dart_companies(corp_codes, watchlist):
 
 
 def fetch_opendart_disclosures():
+    """
+    OpenDART 관심 기업 공시를 수집합니다.
+
+    안정화:
+    - OpenDART 연결 실패/타임아웃 시 전체 실행을 중단하지 않습니다.
+    - 일부 기업 조회 실패 시 해당 기업만 건너뜁니다.
+    """
+    if not OPENDART_ENABLED:
+        print("OPENDART_ENABLED=false 이므로 OpenDART 공시 수집을 건너뜁니다.")
+        return []
+
     if not OPENDART_API_KEY:
         print("OPENDART_API_KEY가 없습니다. OpenDART 공시 수집을 건너뜁니다.")
         return []
@@ -527,10 +565,14 @@ def fetch_opendart_disclosures():
         print("OpenDART 관심 기업 목록이 비어 있습니다.")
         return []
 
-    corp_codes = fetch_dart_corp_codes()
+    try:
+        corp_codes = fetch_dart_corp_codes()
+    except Exception as error:
+        print(f"OpenDART 회사 고유번호 수집 실패: {error}. 공시 수집을 건너뜁니다.")
+        return []
 
     if not corp_codes:
-        print("OpenDART 회사 고유번호 목록이 비어 있습니다.")
+        print("OpenDART 회사 고유번호 목록이 비어 있습니다. 공시 수집을 건너뜁니다.")
         return []
 
     companies = find_dart_companies(corp_codes, watchlist)
@@ -538,6 +580,13 @@ def fetch_opendart_disclosures():
     if not companies:
         print("OpenDART 매칭 기업이 없습니다.")
         return []
+
+    if OPENDART_MAX_COMPANIES > 0 and len(companies) > OPENDART_MAX_COMPANIES:
+        print(
+            f"OpenDART 조회 기업 수 제한: {len(companies)}개 중 "
+            f"{OPENDART_MAX_COMPANIES}개만 조회합니다."
+        )
+        companies = companies[:OPENDART_MAX_COMPANIES]
 
     bgn_de = yyyymmdd_kst(days_ago=3)
     end_de = yyyymmdd_kst(days_ago=0)
@@ -561,10 +610,27 @@ def fetch_opendart_disclosures():
             "page_count": 100,
         }
 
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
+        try:
+            response = requests.get(url, params=params, timeout=OPENDART_TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
 
-        data = response.json()
+        except requests.exceptions.Timeout:
+            print(f"OpenDART 공시 조회 타임아웃: {corp_name}({stock_code}) - 건너뜀")
+            continue
+
+        except requests.exceptions.RequestException as error:
+            print(f"OpenDART 공시 조회 네트워크 오류: {corp_name}({stock_code}) - {error} - 건너뜀")
+            continue
+
+        except ValueError as error:
+            print(f"OpenDART 공시 JSON 처리 오류: {corp_name}({stock_code}) - {error} - 건너뜀")
+            continue
+
+        except Exception as error:
+            print(f"OpenDART 공시 처리 오류: {corp_name}({stock_code}) - {error} - 건너뜀")
+            continue
+
         status = data.get("status")
         message = data.get("message")
 
@@ -1908,7 +1974,12 @@ def build_data_packet(report_mode, report_config):
 
     articles = dedupe_articles(newsapi_articles + alpha_articles)
 
-    dart_disclosures = fetch_opendart_disclosures()
+    try:
+        dart_disclosures = fetch_opendart_disclosures()
+    except Exception as error:
+        print(f"OpenDART 전체 수집 실패: {error}. 공시 없이 보고서를 계속 생성합니다.")
+        dart_disclosures = []
+
     scored_dart_disclosures = [score_dart_disclosure(item) for item in dart_disclosures]
     important_dart_disclosures = filter_important_dart_disclosures(scored_dart_disclosures, max_items=30)
     dart_grade_counts = count_dart_grades(scored_dart_disclosures)
@@ -1938,7 +2009,7 @@ def build_data_packet(report_mode, report_config):
             "KOSPI200 선물은 무료 공개 후보 심볼로 조회하며 실패 시 확인 필요로 표시합니다. "
             "외국인 선물 수급은 아직 안정적인 공개 라이브러리 연결이 제한되어 확인 필요로 표시할 수 있습니다. "
             "무료 공개/스크래핑 데이터라 지연되거나 일부 항목이 누락될 수 있습니다. "
-            "명확하지 않은 항목은 반드시 '확인 필요'로 표시하세요."
+            "OpenDART는 연결 실패/타임아웃 시 공시 없이 계속 진행됩니다. 명확하지 않은 항목은 반드시 '확인 필요'로 표시하세요."
         ),
     }
 
