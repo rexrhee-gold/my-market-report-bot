@@ -1,12 +1,62 @@
-# 미국 관심 종목 예시
+# us_watchlist.txt
+# 목적: 미국증시 자동화 리포트에 추가로 추적할 대표님 전용 관심 종목/ETF
 # 형식: 티커,이름
-NVDA,NVIDIA
-AAPL,Apple
-MSFT,Microsoft
-GOOGL,Alphabet
-META,Meta
-TSLA,Tesla
-AMD,AMD
-AVGO,Broadcom
-SMH,VanEck Semiconductor ETF
-QQQ,Invesco QQQ
+# 주의: 너무 많은 종목을 넣으면 GitHub Actions 실행 시간이 길어질 수 있어 35~40개 내외를 권장합니다.
+
+# AI 소프트웨어 / 클라우드
+PLTR,Palantir
+ORCL,Oracle
+NOW,ServiceNow
+SNOW,Snowflake
+
+# 사이버보안
+CRWD,CrowdStrike
+PANW,Palo Alto Networks
+
+# AI 인프라 / 서버 / 전력
+SMCI,Super Micro Computer
+DELL,Dell Technologies
+VRT,Vertiv
+ANET,Arista Networks
+ETN,Eaton
+CEG,Constellation Energy
+VST,Vistra
+
+# 반도체 장비 / 보완 종목
+AMAT,Applied Materials
+LRCX,Lam Research
+KLAC,KLA
+INTC,Intel
+
+# 크립토 / 디지털자산 관련
+COIN,Coinbase
+MSTR,MicroStrategy
+IBIT,iShares Bitcoin Trust ETF
+
+# 헬스케어 / 비만치료제 / 의료기기
+LLY,Eli Lilly
+NVO,Novo Nordisk
+UNH,UnitedHealth
+ISRG,Intuitive Surgical
+
+# 원전 / 우라늄
+CCJ,Cameco
+URA,Global X Uranium ETF
+
+# 방산 / 항공우주
+LMT,Lockheed Martin
+RTX,RTX
+NOC,Northrop Grumman
+
+# 금융 / 대형 가치주
+JPM,JPMorgan Chase
+BRK-B,Berkshire Hathaway
+GS,Goldman Sachs
+
+# 소비 / 리테일 / 경기 민감
+COST,Costco
+WMT,Walmart
+HD,Home Depot
+
+# 플랫폼 / 여행
+UBER,Uber
