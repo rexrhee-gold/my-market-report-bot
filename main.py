@@ -1,9 +1,12 @@
 import os
 import re
+import io
 import json
+import zipfile
 import smtplib
 import hashlib
 import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
@@ -25,6 +28,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
 
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 ALPHAVANTAGE_KEY = os.getenv("ALPHAVANTAGE_KEY")
+OPENDART_API_KEY = os.getenv("OPENDART_API_KEY")
 
 EMAIL_TO = os.getenv("EMAIL_TO")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -59,6 +63,18 @@ def alpha_time_from(hours=72):
     target_time = datetime.now(UTC) - timedelta(hours=hours)
     return target_time.strftime("%Y%m%dT%H%M")    
 
+def now_kst():
+    return datetime.now(KST)
+
+
+def since_utc(hours=24):
+    return datetime.now(UTC) - timedelta(hours=hours)
+
+
+def yyyymmdd_kst(days_ago=0):
+    target_date = now_kst() - timedelta(days=days_ago)
+    return target_date.strftime("%Y%m%d")
+    
 
 # =========================
 # 관심종목 함수
@@ -95,7 +111,7 @@ def load_watchlist():
 
 
 # =========================
-# 뉴스 수집
+# 뉴스 수집 NEWSAPI
 # =========================
 
 def fetch_newsapi():
@@ -157,6 +173,11 @@ def fetch_newsapi():
 
     print(f"뉴스 {len(result)}개 수집 완료")
     return result
+
+
+# =========================
+# 뉴스 수집 Alpha Vantage NEWS
+# =========================
 
 def fetch_alpha_vantage_news():
     """
@@ -266,6 +287,7 @@ def build_data_packet():
 
     newsapi_articles = fetch_newsapi()
     alpha_articles = fetch_alpha_vantage_news()
+    dart_disclosures = fetch_opendart_disclosures()
 
     articles.extend(newsapi_articles)
     articles.extend(alpha_articles)
@@ -277,18 +299,230 @@ def build_data_packet():
         "article_count": len(articles),
         "newsapi_article_count": len(newsapi_articles),
         "alpha_vantage_article_count": len(alpha_articles),
+        "opendart_disclosure_count": len(dart_disclosures),
         "watchlist_count": len(watchlist),
         "watchlist": watchlist,
         "articles": articles[:100],
-        "instruction": "NewsAPI와 Alpha Vantage 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
+        "opendart_disclosures": dart_disclosures[:100],
+        "instruction": "NewsAPI, Alpha Vantage, OpenDART 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
     }
 
     print(f"NewsAPI 기사 수: {len(newsapi_articles)}개")
     print(f"Alpha Vantage 기사 수: {len(alpha_articles)}개")
+    print(f"OpenDART 공시 수: {len(dart_disclosures)}개")
     print(f"최종 기사 수: {len(articles)}개")
     print(f"관심 종목 수: {len(watchlist)}개")
 
     return data_packet
+
+
+
+# =========================
+# OpenDART 공시 수집
+# =========================
+
+def load_dart_watchlist():
+    """
+    dart_watchlist.txt 파일에서 한국 종목코드 또는 회사명을 읽습니다.
+    종목코드 예:
+    005930
+    000660
+    """
+    path = "dart_watchlist.txt"
+
+    if not os.path.exists(path):
+        print("dart_watchlist.txt 파일이 없습니다. OpenDART 관심 공시 수집은 건너뜁니다.")
+        return []
+
+    with open(path, "r", encoding="utf-8") as file:
+        lines = file.readlines()
+
+    watchlist = []
+
+    for line in lines:
+        item = line.strip()
+
+        if not item:
+            continue
+
+        if item.startswith("#"):
+            continue
+
+        watchlist.append(item)
+
+    print(f"OpenDART 관심 기업 {len(watchlist)}개 로드 완료")
+    return watchlist
+
+
+def fetch_dart_corp_codes():
+    """
+    OpenDART에서 전체 회사 고유번호 목록을 가져옵니다.
+    corpCode.xml은 ZIP 파일 안에 XML로 들어옵니다.
+    """
+    if not OPENDART_API_KEY:
+        print("OPENDART_API_KEY가 없습니다. 회사 고유번호 수집을 건너뜁니다.")
+        return []
+
+    url = "https://opendart.fss.or.kr/api/corpCode.xml"
+
+    params = {
+        "crtfc_key": OPENDART_API_KEY
+    }
+
+    print("OpenDART 회사 고유번호 수집 시작")
+
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+
+    # 인증키 오류 등으로 ZIP이 아닌 응답이 올 수 있으므로 확인
+    content_type = response.headers.get("Content-Type", "")
+
+    if "zip" not in content_type.lower() and not response.content.startswith(b"PK"):
+        print("OpenDART 회사 고유번호 응답이 ZIP이 아닙니다.")
+        print(response.text[:500])
+        return []
+
+    zip_file = zipfile.ZipFile(io.BytesIO(response.content))
+    xml_data = zip_file.read("CORPCODE.xml").decode("utf-8")
+
+    root = ET.fromstring(xml_data)
+
+    corp_codes = []
+
+    for item in root.findall("list"):
+        corp_codes.append(
+            {
+                "corp_code": item.findtext("corp_code"),
+                "corp_name": item.findtext("corp_name"),
+                "stock_code": item.findtext("stock_code"),
+                "modify_date": item.findtext("modify_date"),
+            }
+        )
+
+    print(f"OpenDART 회사 고유번호 {len(corp_codes)}개 수집 완료")
+    return corp_codes
+
+
+def find_dart_companies(corp_codes, watchlist):
+    """
+    dart_watchlist.txt의 종목코드 또는 회사명으로 OpenDART corp_code를 찾습니다.
+    """
+    companies = []
+
+    for target in watchlist:
+        target_clean = target.strip()
+
+        matched = None
+
+        for company in corp_codes:
+            stock_code = (company.get("stock_code") or "").strip()
+            corp_name = (company.get("corp_name") or "").strip()
+
+            # 6자리 종목코드로 매칭
+            if target_clean.isdigit() and len(target_clean) == 6:
+                if stock_code == target_clean:
+                    matched = company
+                    break
+
+            # 회사명으로 매칭
+            else:
+                if target_clean.lower() == corp_name.lower():
+                    matched = company
+                    break
+
+        if matched:
+            companies.append(matched)
+        else:
+            print(f"OpenDART 회사 매칭 실패: {target_clean}")
+
+    print(f"OpenDART 매칭 기업 수: {len(companies)}개")
+    return companies
+
+
+def fetch_opendart_disclosures():
+    """
+    dart_watchlist.txt에 있는 한국 기업의 최근 공시를 가져옵니다.
+    """
+    if not OPENDART_API_KEY:
+        print("OPENDART_API_KEY가 없습니다. OpenDART 공시 수집을 건너뜁니다.")
+        return []
+
+    watchlist = load_dart_watchlist()
+
+    if not watchlist:
+        print("OpenDART 관심 기업 목록이 비어 있습니다.")
+        return []
+
+    corp_codes = fetch_dart_corp_codes()
+
+    if not corp_codes:
+        print("OpenDART 회사 고유번호 목록이 비어 있습니다.")
+        return []
+
+    companies = find_dart_companies(corp_codes, watchlist)
+
+    if not companies:
+        print("OpenDART 매칭 기업이 없습니다.")
+        return []
+
+    bgn_de = yyyymmdd_kst(days_ago=7)
+    end_de = yyyymmdd_kst(days_ago=0)
+
+    disclosures = []
+
+    print(f"OpenDART 공시 수집 시작: {bgn_de} ~ {end_de}")
+
+    for company in companies:
+        corp_code = company["corp_code"]
+        corp_name = company["corp_name"]
+        stock_code = company.get("stock_code")
+
+        url = "https://opendart.fss.or.kr/api/list.json"
+
+        params = {
+            "crtfc_key": OPENDART_API_KEY,
+            "corp_code": corp_code,
+            "bgn_de": bgn_de,
+            "end_de": end_de,
+            "page_count": 100,
+        }
+
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+
+        status = data.get("status")
+        message = data.get("message")
+
+        # 000: 정상, 013: 조회된 데이터 없음
+        if status == "013":
+            print(f"OpenDART 공시 없음: {corp_name}({stock_code})")
+            continue
+
+        if status != "000":
+            print(f"OpenDART 오류: {corp_name}({stock_code}) status={status}, message={message}")
+            continue
+
+        for item in data.get("list", []):
+            rcept_no = item.get("rcept_no")
+
+            disclosures.append(
+                {
+                    "provider": "OpenDART",
+                    "corp_name": item.get("corp_name"),
+                    "stock_code": item.get("stock_code"),
+                    "corp_code": item.get("corp_code"),
+                    "report_name": item.get("report_nm"),
+                    "receipt_no": rcept_no,
+                    "receipt_date": item.get("rcept_dt"),
+                    "submitter": item.get("flr_nm"),
+                    "viewer_url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}" if rcept_no else None,
+                }
+            )
+
+    print(f"OpenDART 공시 {len(disclosures)}개 수집 완료")
+    return disclosures
 
 
 # =========================
@@ -332,6 +566,14 @@ DATA:
 - 주목할 섹터와 리스크 요인을 정리하세요.
 - 가능한 경우 기사 출처와 URL을 함께 표시하세요.
 - 투자 권유가 아니라 참고용 분석이라는 문구를 포함하세요.
+
+OpenDART 공시 활용 요구사항:
+- data_packet 안의 opendart_disclosures 항목을 반드시 확인하세요.
+- OpenDART 공시는 한국 기업 분석에서 뉴스보다 우선순위가 높은 공식 자료로 취급하세요.
+- 공시가 있으면 회사명, 종목코드, 공시명, 접수일, 링크를 표로 정리하세요.
+- 공시 제목만 보고 과도하게 해석하지 말고, 확인이 필요한 부분은 “공시 원문 확인 필요”라고 표시하세요.
+- 관심 종목과 연결되는 공시가 있으면 관심 종목 영향 분석에 반영하세요.
+- 공시가 없으면 “관심 기업 기준 최근 7일 OpenDART 주요 공시 없음”이라고 표시하세요.
 
 Alpha Vantage 데이터 활용 요구사항:
 - provider가 "Alpha Vantage"인 뉴스는 감성 분석 정보를 함께 참고하세요.
