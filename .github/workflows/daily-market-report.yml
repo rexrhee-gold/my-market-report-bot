@@ -41,6 +41,8 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
         run: |
           test -n "$OPENAI_API_KEY" || (echo "OPENAI_API_KEY 없음" && exit 1)
           test -n "$NEWSAPI_KEY" || (echo "NEWSAPI_KEY 없음" && exit 1)
@@ -50,6 +52,8 @@ jobs:
           test -n "$SMTP_USER" || (echo "SMTP_USER 없음" && exit 1)
           test -n "$SMTP_PASSWORD" || (echo "SMTP_PASSWORD 없음" && exit 1)
           test -n "$SLACK_WEBHOOK_URL" || (echo "SLACK_WEBHOOK_URL 없음" && exit 1)
+          test -n "$NOTION_TOKEN" || (echo "NOTION_TOKEN 없음" && exit 1)
+          test -n "$NOTION_PARENT_PAGE_ID" || (echo "NOTION_PARENT_PAGE_ID 없음" && exit 1)
           echo "필수 Secrets 확인 완료"
 
       - name: Run daily report
