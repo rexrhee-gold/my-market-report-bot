@@ -32,9 +32,15 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+
+# =========================
+# 시간 함수
+# =========================
 
 def now_kst():
     return datetime.now(KST)
@@ -49,9 +55,6 @@ def since_utc(hours=24):
 # =========================
 
 def fetch_newsapi():
-    """
-    NewsAPI에서 최근 24시간 시장 관련 뉴스를 가져옵니다.
-    """
     if not NEWSAPI_KEY:
         print("NEWSAPI_KEY가 없습니다. 뉴스 수집을 건너뜁니다.")
         return []
@@ -83,9 +86,9 @@ def fetch_newsapi():
 
     for article in articles:
         title = article.get("title")
-        url = article.get("url")
+        article_url = article.get("url")
 
-        if not title or not url:
+        if not title or not article_url:
             continue
 
         result.append(
@@ -93,7 +96,7 @@ def fetch_newsapi():
                 "source": article.get("source", {}).get("name"),
                 "title": title,
                 "description": article.get("description"),
-                "url": url,
+                "url": article_url,
                 "published_at": article.get("publishedAt"),
                 "provider": "NewsAPI",
             }
@@ -104,9 +107,6 @@ def fetch_newsapi():
 
 
 def dedupe_articles(articles):
-    """
-    제목과 URL 기준으로 중복 뉴스를 제거합니다.
-    """
     seen = set()
     result = []
 
@@ -122,9 +122,6 @@ def dedupe_articles(articles):
 
 
 def build_data_packet():
-    """
-    OpenAI에 넣을 데이터 묶음을 만듭니다.
-    """
     articles = []
 
     articles.extend(fetch_newsapi())
@@ -147,9 +144,6 @@ def build_data_packet():
 # =========================
 
 def load_expert_prompt():
-    """
-    prompts/expert.md 파일에서 전문가 프롬프트를 읽습니다.
-    """
     prompt_path = "prompts/expert.md"
 
     if not os.path.exists(prompt_path):
@@ -163,9 +157,6 @@ def load_expert_prompt():
 
 
 def generate_report(data_packet):
-    """
-    수집한 뉴스 데이터를 OpenAI에 넣어 증시 분석 보고서를 생성합니다.
-    """
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY가 없습니다.")
 
@@ -214,9 +205,6 @@ DATA:
 # =========================
 
 def send_email(report):
-    """
-    생성된 보고서를 이메일로 보냅니다.
-    """
     if not EMAIL_TO:
         print("EMAIL_TO가 없어서 이메일 발송을 건너뜁니다.")
         return
@@ -247,18 +235,14 @@ def send_email(report):
 # =========================
 
 def send_slack(report):
-    """
-    생성된 보고서를 Slack 채널로 보냅니다.
-    """
     if not SLACK_WEBHOOK_URL:
         print("SLACK_WEBHOOK_URL이 없어서 Slack 발송을 건너뜁니다.")
         return
 
-    # Slack 메시지는 너무 길면 보기 불편하므로 앞부분만 보냅니다.
     slack_text = report[:3500]
 
     if len(report) > 3500:
-        slack_text += "\n\n...(보고서가 길어 일부만 표시했습니다. 전체 내용은 이메일을 확인하세요.)"
+        slack_text += "\n\n...(보고서가 길어 일부만 표시했습니다. 전체 내용은 이메일 또는 Notion을 확인하세요.)"
 
     payload = {
         "text": f"*오늘의 증시 분석 보고서*\n\n{slack_text}"
@@ -279,6 +263,86 @@ def send_slack(report):
 
 
 # =========================
+# Notion 저장
+# =========================
+
+def chunk_text(text, size=1800):
+    return [text[i:i + size] for i in range(0, len(text), size)]
+
+
+def send_notion(report):
+    if not NOTION_TOKEN:
+        print("NOTION_TOKEN이 없어서 Notion 저장을 건너뜁니다.")
+        return
+
+    if not NOTION_PARENT_PAGE_ID:
+        print("NOTION_PARENT_PAGE_ID가 없어서 Notion 저장을 건너뜁니다.")
+        return
+
+    title = f"증시 분석 보고서 - {now_kst().strftime('%Y-%m-%d')}"
+
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+    children = []
+
+    for chunk in chunk_text(report, size=1800):
+        children.append(
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {
+                            "type": "text",
+                            "text": {
+                                "content": chunk
+                            }
+                        }
+                    ]
+                },
+            }
+        )
+
+    payload = {
+        "parent": {
+            "type": "page_id",
+            "page_id": NOTION_PARENT_PAGE_ID,
+        },
+        "properties": {
+            "title": {
+                "title": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": title
+                        }
+                    }
+                ]
+            }
+        },
+        "children": children[:100],
+    }
+
+    print("Notion 저장 시작")
+
+    response = requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Notion 저장 실패: {response.status_code} {response.text}")
+
+    print("Notion 저장 완료")
+
+
+# =========================
 # 메인 실행
 # =========================
 
@@ -294,6 +358,7 @@ def main():
 
     send_email(report)
     send_slack(report)
+    send_notion(report)
 
     print("Daily Market Report 완료")
 
