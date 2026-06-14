@@ -116,7 +116,13 @@ def fetch_newsapi():
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
 
-    articles = response.json().get("articles", [])
+    data = response.json()
+
+    print("NewsAPI status:", data.get("status"))
+    print("NewsAPI totalResults:", data.get("totalResults"))
+    print("NewsAPI message:", data.get("message"))
+
+    articles = data.get("articles", [])
 
     result = []
 
