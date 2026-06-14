@@ -1134,6 +1134,323 @@ def format_top_stock_list(items, limit=5):
     return ", ".join(parts)
 
 
+
+# =========================
+# 업종/테마 자동 분류
+# =========================
+
+STOCK_THEME_MAP = {
+    # 반도체·AI
+    "005930": "반도체·AI",
+    "000660": "반도체·AI",
+    "042700": "반도체·AI",
+    "009150": "반도체·AI",
+    "058470": "반도체·AI",
+    "036930": "반도체·AI",
+    "000990": "반도체·AI",
+    "039030": "반도체·AI",
+    "108320": "반도체·AI",
+    "240810": "반도체·AI",
+    "319660": "반도체·AI",
+    "214450": "반도체·AI",
+
+    # 2차전지
+    "373220": "2차전지",
+    "051910": "2차전지",
+    "006400": "2차전지",
+    "096770": "2차전지",
+    "247540": "2차전지",
+    "003670": "2차전지",
+    "086520": "2차전지",
+    "066970": "2차전지",
+    "011790": "2차전지",
+
+    # 자동차
+    "005380": "자동차",
+    "000270": "자동차",
+    "012330": "자동차",
+    "161390": "자동차",
+    "018880": "자동차",
+
+    # 금융
+    "105560": "금융",
+    "055550": "금융",
+    "086790": "금융",
+    "032830": "금융",
+    "000810": "금융",
+    "138930": "금융",
+    "024110": "금융",
+    "316140": "금융",
+
+    # 조선·기계·산업재
+    "010140": "조선·기계·산업재",
+    "329180": "조선·기계·산업재",
+    "042660": "조선·기계·산업재",
+    "009540": "조선·기계·산업재",
+    "034020": "조선·기계·산업재",
+    "267260": "조선·기계·산업재",
+    "064350": "조선·기계·산업재",
+    "042670": "조선·기계·산업재",
+
+    # 방산·우주항공
+    "012450": "방산·우주항공",
+    "047810": "방산·우주항공",
+    "064960": "방산·우주항공",
+    "079550": "방산·우주항공",
+    "272210": "방산·우주항공",
+
+    # 바이오
+    "068270": "바이오",
+    "207940": "바이오",
+    "128940": "바이오",
+    "326030": "바이오",
+    "302440": "바이오",
+    "145020": "바이오",
+    "196170": "바이오",
+
+    # 인터넷·게임
+    "035420": "인터넷·게임",
+    "035720": "인터넷·게임",
+    "036570": "인터넷·게임",
+    "251270": "인터넷·게임",
+    "259960": "인터넷·게임",
+    "112040": "인터넷·게임",
+
+    # 항공·운송
+    "003490": "항공·운송",
+    "180640": "항공·운송",
+    "000120": "항공·운송",
+    "011200": "항공·운송",
+    "086280": "항공·운송",
+    "028670": "항공·운송",
+
+    # 정유·에너지
+    "010950": "정유·에너지",
+    "096770": "정유·에너지",
+    "267250": "정유·에너지",
+    "015760": "정유·에너지",
+    "034730": "정유·에너지",
+    "017670": "정유·에너지",
+
+    # 화학·소재
+    "051910": "화학·소재",
+    "011170": "화학·소재",
+    "009830": "화학·소재",
+    "010130": "화학·소재",
+    "004020": "화학·소재",
+
+    # 소비재·화장품
+    "090430": "소비재·화장품",
+    "051900": "소비재·화장품",
+    "018260": "소비재·화장품",
+    "097950": "소비재·화장품",
+    "271560": "소비재·화장품",
+
+    # 건설·부동산
+    "000720": "건설·부동산",
+    "006360": "건설·부동산",
+    "047040": "건설·부동산",
+    "028050": "건설·부동산",
+}
+
+THEME_KEYWORD_RULES = [
+    ("반도체·AI", ["반도체", "하이닉스", "삼성전자", "칩", "테크", "HBM", "AI", "실리콘", "테스", "리노", "원익", "한미반도체"]),
+    ("2차전지", ["에코프로", "엘앤에프", "포스코퓨처", "배터리", "2차전지", "전지", "양극재", "음극재", "전해액"]),
+    ("자동차", ["현대차", "기아", "모비스", "만도", "자동차", "타이어"]),
+    ("금융", ["금융", "은행", "보험", "증권", "카드", "지주"]),
+    ("조선·기계·산업재", ["조선", "중공업", "엔진", "기계", "로보틱스", "두산", "현대로템", "산업"]),
+    ("방산·우주항공", ["방산", "항공", "우주", "한화에어로", "한국항공", "LIG", "풍산"]),
+    ("바이오", ["바이오", "제약", "셀트리온", "삼성바이오", "헬스", "메디", "약품"]),
+    ("인터넷·게임", ["NAVER", "카카오", "게임", "엔씨", "크래프톤", "넷마블", "인터넷"]),
+    ("항공·운송", ["항공", "대한항공", "운송", "해운", "HMM", "글로비스", "CJ대한통운"]),
+    ("정유·에너지", ["정유", "에너지", "S-Oil", "SK이노", "가스", "전력", "한국전력", "석유"]),
+    ("화학·소재", ["화학", "소재", "금속", "철강", "포스코", "고려아연", "현대제철"]),
+    ("소비재·화장품", ["화장품", "아모레", "LG생활", "식품", "오리온", "CJ제일제당", "농심"]),
+    ("건설·부동산", ["건설", "현대건설", "대우건설", "DL이앤씨", "부동산"]),
+]
+
+
+def classify_stock_theme(ticker, name):
+    """
+    종목코드와 종목명으로 업종/테마를 자동 분류합니다.
+    1차: 주요 종목 코드 매핑
+    2차: 종목명 키워드 분류
+    """
+    ticker = str(ticker).zfill(6)
+    name = name or ""
+
+    if ticker in STOCK_THEME_MAP:
+        return STOCK_THEME_MAP[ticker]
+
+    upper_name = name.upper()
+
+    for theme, keywords in THEME_KEYWORD_RULES:
+        for keyword in keywords:
+            if keyword.upper() in upper_name:
+                return theme
+
+    return "기타"
+
+
+def enrich_stocks_with_theme(items):
+    result = []
+
+    for item in items or []:
+        enriched = dict(item)
+        enriched["theme"] = classify_stock_theme(
+            enriched.get("ticker", ""),
+            enriched.get("name", "")
+        )
+        result.append(enriched)
+
+    return result
+
+
+def aggregate_theme_trading_value(items):
+    """
+    거래대금 상위 종목을 업종/테마별로 합산합니다.
+    """
+    theme_map = {}
+
+    for item in items or []:
+        theme = item.get("theme") or classify_stock_theme(item.get("ticker", ""), item.get("name", ""))
+        trading_value = safe_float(item.get("trading_value")) or 0
+        change_pct = safe_float(item.get("change_pct"))
+
+        if theme not in theme_map:
+            theme_map[theme] = {
+                "theme": theme,
+                "stock_count": 0,
+                "total_trading_value": 0,
+                "total_change_pct": 0,
+                "change_pct_count": 0,
+                "top_stocks": [],
+            }
+
+        theme_map[theme]["stock_count"] += 1
+        theme_map[theme]["total_trading_value"] += trading_value
+
+        if change_pct is not None:
+            theme_map[theme]["total_change_pct"] += change_pct
+            theme_map[theme]["change_pct_count"] += 1
+
+        theme_map[theme]["top_stocks"].append(
+            {
+                "ticker": item.get("ticker"),
+                "name": item.get("name"),
+                "change_pct": item.get("change_pct"),
+                "trading_value": item.get("trading_value"),
+                "trading_value_text": item.get("trading_value_text"),
+            }
+        )
+
+    result = []
+
+    for theme_data in theme_map.values():
+        count = theme_data["change_pct_count"]
+
+        if count > 0:
+            avg_change_pct = theme_data["total_change_pct"] / count
+        else:
+            avg_change_pct = None
+
+        theme_data["avg_change_pct"] = avg_change_pct
+        theme_data["total_trading_value_text"] = format_krw_amount(theme_data["total_trading_value"])
+
+        theme_data["top_stocks"] = sorted(
+            theme_data["top_stocks"],
+            key=lambda x: safe_float(x.get("trading_value")) or 0,
+            reverse=True,
+        )[:5]
+
+        result.append(theme_data)
+
+    result.sort(
+        key=lambda x: safe_float(x.get("total_trading_value")) or 0,
+        reverse=True,
+    )
+
+    return result
+
+
+def format_theme_summary(theme_items, limit=6):
+    if not theme_items:
+        return "확인 필요"
+
+    parts = []
+
+    for item in theme_items[:limit]:
+        theme = item.get("theme")
+        total_text = item.get("total_trading_value_text")
+        avg_change_pct = item.get("avg_change_pct")
+        top_stocks = item.get("top_stocks", [])
+
+        top_stock_names = ", ".join([s.get("name", "") for s in top_stocks[:3] if s.get("name")])
+
+        if avg_change_pct is None:
+            parts.append(f"{theme}: {total_text} / 대표: {top_stock_names}")
+        else:
+            parts.append(f"{theme}: {total_text}, 평균 {avg_change_pct:+.2f}% / 대표: {top_stock_names}")
+
+    return " | ".join(parts)
+
+
+# =========================
+# KOSPI200 선물 / 외국인 선물 수급
+# =========================
+
+def fetch_kospi200_futures_data():
+    """
+    KOSPI200 선물 데이터를 무료 공개 소스 후보로 조회합니다.
+
+    주의:
+    - Yahoo Finance의 한국 파생상품 심볼은 환경에 따라 조회가 안 될 수 있습니다.
+    - 실패하면 KOSPI200 지수 대체 데이터와 '확인 필요'를 함께 제공합니다.
+    """
+    candidates = [
+        ("KR200=F", "KOSPI200 Futures 후보 1"),
+        ("K200=F", "KOSPI200 Futures 후보 2"),
+        ("KS200=F", "KOSPI200 Futures 후보 3"),
+    ]
+
+    for symbol, name in candidates:
+        quote = fetch_yfinance_quote(symbol, name)
+
+        if quote.get("status") == "ok":
+            quote["data_note"] = "Yahoo Finance 후보 심볼 기준입니다. 실제 KRX 선물과 차이가 있을 수 있어 확인 필요합니다."
+            return {
+                "status": "ok",
+                "source": "Yahoo Finance candidate symbol",
+                "quote": quote,
+                "summary": quote_to_text(quote),
+            }
+
+    return {
+        "status": "확인 필요",
+        "source": "not_available",
+        "summary": "확인 필요 - 무료 공개 데이터 후보에서 KOSPI200 선물 조회 실패",
+        "data_note": "현재 버전은 KOSPI200 지수 대체 데이터와 함께 확인 필요로 표시합니다.",
+    }
+
+
+def fetch_foreign_futures_flow_data(date_text):
+    """
+    외국인 선물 수급 데이터 수집 함수입니다.
+
+    현재 안정적인 무료 공개 Python 라이브러리 연결이 제한되어 있어
+    자동 수집 실패 시 명확히 '확인 필요'로 표시합니다.
+
+    이후 KRX 파생상품 전용 엔드포인트가 안정적으로 확인되면 이 함수만 교체하면 됩니다.
+    """
+    return {
+        "status": "확인 필요",
+        "latest_trading_date": date_text,
+        "summary": "확인 필요 - 외국인 선물 수급은 KRX 파생상품 전용 데이터 추가 연결 필요",
+        "data_note": "현재 버전은 외국인 현물 수급과 KOSPI200 지수/선물 후보 데이터를 함께 참고합니다.",
+    }
+
+
+
 def fetch_krx_market_data():
     """
     pykrx 기반 한국시장 전용 데이터입니다.
@@ -1143,8 +1460,13 @@ def fetch_krx_market_data():
     - KOSPI/KOSDAQ 투자자별 수급
     - KOSPI/KOSDAQ 거래대금 상위 종목
     - KOSPI/KOSDAQ 등락률 상위 종목
+    - 거래대금 기준 업종/테마 자동 분류
+    - KOSPI200 선물 후보 데이터
+    - 외국인 선물 수급 상태
     """
     print("KRX/pykrx 한국시장 데이터 수집 시작")
+
+    kospi200_futures = fetch_kospi200_futures_data()
 
     if krx_stock is None:
         print("pykrx가 설치되어 있지 않아 KRX 데이터 수집을 건너뜁니다.")
@@ -1156,6 +1478,9 @@ def fetch_krx_market_data():
             "investor_flows": {},
             "top_trading_value": {},
             "top_gainers": {},
+            "theme_trading_value": [],
+            "kospi200_futures": kospi200_futures,
+            "foreign_futures_flow": fetch_foreign_futures_flow_data(None),
         }
 
     latest_date = get_latest_krx_trading_date(max_lookback_days=10)
@@ -1170,6 +1495,9 @@ def fetch_krx_market_data():
             "investor_flows": {},
             "top_trading_value": {},
             "top_gainers": {},
+            "theme_trading_value": [],
+            "kospi200_futures": kospi200_futures,
+            "foreign_futures_flow": fetch_foreign_futures_flow_data(None),
         }
 
     investor_flows = {
@@ -1177,29 +1505,51 @@ def fetch_krx_market_data():
         "KOSDAQ": fetch_krx_investor_flow(latest_date, "KOSDAQ"),
     }
 
+    # 거래대금 상위 종목은 업종/테마 집계를 위해 넉넉히 100개까지 수집합니다.
     top_trading_value = {
-        "KOSPI": fetch_krx_top_trading_value(latest_date, "KOSPI", limit=10),
-        "KOSDAQ": fetch_krx_top_trading_value(latest_date, "KOSDAQ", limit=10),
+        "KOSPI": enrich_stocks_with_theme(
+            fetch_krx_top_trading_value(latest_date, "KOSPI", limit=100)
+        ),
+        "KOSDAQ": enrich_stocks_with_theme(
+            fetch_krx_top_trading_value(latest_date, "KOSDAQ", limit=100)
+        ),
     }
 
     top_gainers = {
-        "KOSPI": fetch_krx_top_gainers(latest_date, "KOSPI", limit=10),
-        "KOSDAQ": fetch_krx_top_gainers(latest_date, "KOSDAQ", limit=10),
+        "KOSPI": enrich_stocks_with_theme(
+            fetch_krx_top_gainers(latest_date, "KOSPI", limit=30)
+        ),
+        "KOSDAQ": enrich_stocks_with_theme(
+            fetch_krx_top_gainers(latest_date, "KOSDAQ", limit=30)
+        ),
     }
+
+    all_top_value_items = top_trading_value["KOSPI"] + top_trading_value["KOSDAQ"]
+    theme_trading_value = aggregate_theme_trading_value(all_top_value_items)
+
+    foreign_futures_flow = fetch_foreign_futures_flow_data(latest_date)
 
     krx_data = {
         "status": "ok",
-        "data_source": "KRX via pykrx",
+        "data_source": "KRX via pykrx + yfinance candidate futures",
         "latest_trading_date": latest_date,
         "data_delay_note": "KRX/pykrx 데이터는 장중 실시간 데이터가 아닐 수 있으며, 최근 조회 가능 거래일 기준입니다.",
         "investor_flows": investor_flows,
         "top_trading_value": top_trading_value,
         "top_gainers": top_gainers,
+        "theme_trading_value": theme_trading_value,
+        "theme_trading_value_summary": format_theme_summary(theme_trading_value, limit=8),
+        "kospi200_futures": kospi200_futures,
+        "foreign_futures_flow": foreign_futures_flow,
     }
 
     print(f"KRX/pykrx 한국시장 데이터 수집 완료: 기준일 {latest_date}")
+    print(f"업종/테마 거래대금 집계 완료: {len(theme_trading_value)}개 테마")
+    print(f"KOSPI200 선물 상태: {kospi200_futures.get('status')}")
+    print(f"외국인 선물 수급 상태: {foreign_futures_flow.get('status')}")
 
     return krx_data
+
 
 
 def merge_krx_data_into_market_data(market_data, krx_data):
@@ -1207,6 +1557,21 @@ def merge_krx_data_into_market_data(market_data, krx_data):
     yfinance 기반 market_data에 pykrx 한국시장 데이터를 보강합니다.
     """
     market_data["krx_data"] = krx_data
+
+    # KOSPI200 선물 후보 데이터는 KRX 상태와 무관하게 반영합니다.
+    kospi200_futures = krx_data.get("kospi200_futures", {})
+    market_data["kospi200_futures_data"] = kospi200_futures
+    market_data["kospi200_futures"] = kospi200_futures.get(
+        "summary",
+        "확인 필요 - KOSPI200 선물 데이터 없음"
+    )
+
+    foreign_futures_flow = krx_data.get("foreign_futures_flow", {})
+    market_data["foreign_futures_flow_data"] = foreign_futures_flow
+    market_data["foreign_futures_flow"] = foreign_futures_flow.get(
+        "summary",
+        "확인 필요 - 외국인 선물 수급 데이터 없음"
+    )
 
     if krx_data.get("status") != "ok":
         market_data["krx_data_status"] = krx_data.get("reason", "확인 필요")
@@ -1233,25 +1598,34 @@ def merge_krx_data_into_market_data(market_data, krx_data):
         ["개인"]
     )
 
-    market_data["foreign_futures_flow"] = "확인 필요 - 외국인 선물 수급은 아직 3차 연결 예정"
-
     kospi_top_value = krx_data.get("top_trading_value", {}).get("KOSPI", [])
     kosdaq_top_value = krx_data.get("top_trading_value", {}).get("KOSDAQ", [])
     kospi_top_gainers = krx_data.get("top_gainers", {}).get("KOSPI", [])
     kosdaq_top_gainers = krx_data.get("top_gainers", {}).get("KOSDAQ", [])
 
     market_data["leading_stocks_by_trading_value"] = {
-        "KOSPI": kospi_top_value,
-        "KOSDAQ": kosdaq_top_value,
+        "KOSPI": kospi_top_value[:20],
+        "KOSDAQ": kosdaq_top_value[:20],
     }
 
     market_data["top_gainers"] = {
-        "KOSPI": kospi_top_gainers,
-        "KOSDAQ": kosdaq_top_gainers,
+        "KOSPI": kospi_top_gainers[:20],
+        "KOSDAQ": kosdaq_top_gainers[:20],
     }
 
+    market_data["theme_trading_value"] = krx_data.get("theme_trading_value", [])
+    market_data["theme_trading_value_summary"] = krx_data.get(
+        "theme_trading_value_summary",
+        "확인 필요"
+    )
+
     market_data["leading_sectors_by_volume"] = (
-        "거래대금 상위 종목 기준 주도주 후보 - "
+        "업종/테마 자동 분류 기준 거래대금 상위 - "
+        f"{market_data['theme_trading_value_summary']}"
+    )
+
+    market_data["leading_stocks_summary"] = (
+        "거래대금 상위 종목 - "
         f"KOSPI: {format_top_stock_list(kospi_top_value, limit=5)} / "
         f"KOSDAQ: {format_top_stock_list(kosdaq_top_value, limit=5)}"
     )
@@ -1263,6 +1637,7 @@ def merge_krx_data_into_market_data(market_data, krx_data):
     )
 
     return market_data
+
 
 
 
@@ -1464,9 +1839,11 @@ def build_data_packet(report_mode, report_config):
         "important_note": (
             "KOSPI/KOSDAQ, 삼성전자, SK하이닉스, 원/달러 환율, 미국 지수·선물, "
             "금리·달러·유가·금 일부 데이터는 yfinance 기반으로 자동 수집됩니다. "
-            "한국시장 투자자별 수급과 거래대금 상위 종목은 pykrx 기반으로 자동 수집됩니다. "
+            "한국시장 투자자별 수급, 거래대금 상위 종목, 등락률 상위 종목은 pykrx 기반으로 자동 수집됩니다. "
+            "거래대금 상위 종목은 업종/테마 자동 분류 로직으로 집계됩니다. "
+            "KOSPI200 선물은 무료 공개 후보 심볼로 조회하며 실패 시 확인 필요로 표시합니다. "
+            "외국인 선물 수급은 아직 안정적인 공개 라이브러리 연결이 제한되어 확인 필요로 표시할 수 있습니다. "
             "무료 공개/스크래핑 데이터라 지연되거나 일부 항목이 누락될 수 있습니다. "
-            "외국인 선물 수급, 실제 KOSPI200 선물, 업종별 거래대금은 아직 3차 연결 예정입니다. "
             "명확하지 않은 항목은 반드시 '확인 필요'로 표시하세요."
         ),
     }
