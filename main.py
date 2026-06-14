@@ -95,16 +95,17 @@ def fetch_newsapi():
         return []
 
     query = (
-    "stock OR market OR economy OR inflation OR interest rates OR "
-    "Federal Reserve OR Nvidia OR Apple OR Tesla OR AI OR semiconductor OR "
-    "oil OR dollar OR bond OR Korea OR KOSPI OR Samsung"
-)
+        "stock OR market OR economy OR inflation OR rates OR "
+        "Federal Reserve OR Fed OR Nvidia OR Apple OR Microsoft OR Tesla OR "
+        "AI OR semiconductor OR oil OR dollar OR bond OR yield OR "
+        "Korea OR KOSPI OR Samsung OR SK Hynix"
+    )
 
     url = "https://newsapi.org/v2/everything"
 
     params = {
         "q": query,
-        "from": since_utc(24).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "from": since_utc(72).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sortBy": "publishedAt",
         "language": "en",
         "pageSize": 50,
@@ -112,6 +113,7 @@ def fetch_newsapi():
     }
 
     print("뉴스 데이터 수집 시작")
+    print("NewsAPI query:", query)
 
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
