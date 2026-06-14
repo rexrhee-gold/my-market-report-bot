@@ -158,6 +158,7 @@ def dedupe_articles(articles):
 
 def build_data_packet():
     articles = []
+    watchlist = load_watchlist()
 
     articles.extend(fetch_newsapi())
 
@@ -166,11 +167,14 @@ def build_data_packet():
     data_packet = {
         "generated_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S KST"),
         "article_count": len(articles),
+        "watchlist_count": len(watchlist),
+        "watchlist": watchlist,
         "articles": articles[:80],
-        "instruction": "이 데이터만 근거로 오늘의 증시 분석 보고서를 작성하라.",
+        "instruction": "이 데이터와 관심 종목 목록을 근거로 오늘의 증시 분석 보고서를 작성하라.",
     }
 
     print(f"최종 기사 수: {len(articles)}개")
+    print(f"관심 종목 수: {len(watchlist)}개")
     return data_packet
 
 
