@@ -901,10 +901,10 @@ def fetch_yfinance_market_data(report_mode):
         "korea_key_stocks": korea_key_stocks,
         "fx_rates": fx_rates,
         "us_indices": us_indices,
-        "us_futures": us_futures,
+        "us_futures_quotes": us_futures,
         "global_indicators": global_indicators,
         "commodities": commodities,
-        "big_tech": big_tech,
+        "big_tech_quotes": big_tech,
 
         # 프롬프트가 바로 읽기 쉬운 요약 필드
         "kospi_current": quote_to_text(korea_indices["kospi"]),
@@ -962,13 +962,13 @@ def fetch_yfinance_market_data(report_mode):
         "korea_key_stocks",
         "fx_rates",
         "us_indices",
-        "us_futures",
+        "us_futures_quotes",
         "global_indicators",
         "commodities",
-        "big_tech",
+        "big_tech_quotes",
     ]:
         for item in market_data[group_name].values():
-            if item.get("status") == "ok":
+            if isinstance(item, dict) and item.get("status") == "ok":
                 ok_count += 1
             else:
                 check_count += 1
