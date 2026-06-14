@@ -618,10 +618,44 @@ Notion 저장 형식 요구사항:
     if not report or not report.strip():
         raise ValueError("OpenAI 응답이 비어 있습니다.")
 
+
+
+def build_opendart_section(data_packet):
+    """
+    OpenDART 공시 데이터를 보고서 맨 마지막에 강제로 붙일 섹션으로 만듭니다.
+    """
+    disclosures = data_packet.get("opendart_disclosures", [])
+
+    section = "\n\n## 한국 기업 공시 체크\n\n"
+
+    if not disclosures:
+        section += "관심 기업 기준 최근 OpenDART 주요 공시 없음\n"
+        return section
+
+    section += "| 회사 | 종목코드 | 공시명 | 접수일 | 해석 | 원문 링크 |\n"
+    section += "|---|---:|---|---|---|---|\n"
+
+    for item in disclosures[:50]:
+        corp_name = item.get("corp_name") or ""
+        stock_code = item.get("stock_code") or ""
+        report_name = item.get("report_name") or ""
+        receipt_date = item.get("receipt_date") or ""
+        viewer_url = item.get("viewer_url") or ""
+
+        section += (
+            f"| {corp_name} "
+            f"| {stock_code} "
+            f"| {report_name} "
+            f"| {receipt_date} "
+            f"| 공시 원문 확인 필요 "
+            f"| {viewer_url} |\n"
+        )
+
+    return section
+
     print("OpenAI 보고서 생성 완료")
     return report
-
-
+    
 # =========================
 # 이메일 발송
 # =========================
@@ -939,6 +973,9 @@ def main():
         print("수집된 뉴스가 없습니다. 그래도 보고서를 생성합니다.")
 
     report = generate_report(data_packet)
+
+    # OpenDART 공시 섹션을 보고서 맨 마지막에 강제로 추가
+    report = report + build_opendart_section(data_packet)
 
     send_email(report)
     send_slack(report)
