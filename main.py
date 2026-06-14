@@ -51,6 +51,40 @@ def since_utc(hours=24):
 
 
 # =========================
+# 관심종목 함수
+# =========================
+
+def load_watchlist():
+    """
+    watchlist.txt 파일에서 관심 종목 목록을 읽습니다.
+    """
+    path = "watchlist.txt"
+
+    if not os.path.exists(path):
+        print("watchlist.txt 파일이 없습니다. 관심 종목 분석은 건너뜁니다.")
+        return []
+
+    with open(path, "r", encoding="utf-8") as file:
+        lines = file.readlines()
+
+    watchlist = []
+
+    for line in lines:
+        item = line.strip()
+
+        if not item:
+            continue
+
+        if item.startswith("#"):
+            continue
+
+        watchlist.append(item)
+
+    print(f"관심 종목 {len(watchlist)}개 로드 완료")
+    return watchlist
+
+
+# =========================
 # 뉴스 수집
 # =========================
 
