@@ -19,6 +19,7 @@ except Exception:
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
+from contextlib import redirect_stdout, redirect_stderr
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -836,6 +837,45 @@ def first_ok_quote(candidates):
 # KRX / pykrx 한국시장 데이터
 # =========================
 
+
+def safe_pykrx_call(func, *args, **kwargs):
+    """
+    pykrx 내부에서 출력하는 반복 에러 로그를 숨기고,
+    실패 시 None을 반환합니다.
+    GitHub Actions 로그가 불필요하게 길어지는 것을 방지합니다.
+    """
+    try:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer), redirect_stderr(buffer):
+            return func(*args, **kwargs)
+    except Exception as error:
+        return None
+
+
+def is_valid_ohlcv_dataframe(df):
+    """
+    pykrx OHLCV DataFrame이 정상 구조인지 확인합니다.
+    pykrx/KRX 응답 구조가 바뀌거나 빈 응답이면 False를 반환합니다.
+    """
+    if df is None:
+        return False
+
+    try:
+        if df.empty:
+            return False
+
+        required_any_columns = ["종가", "거래량", "거래대금", "등락률"]
+
+        for col in required_any_columns:
+            if col in df.columns:
+                return True
+
+        return False
+
+    except Exception:
+        return False
+
+
 def normalize_number(value):
     """
     pandas/numpy 숫자 타입을 JSON 저장 가능한 기본 Python 숫자로 변환합니다.
@@ -900,22 +940,41 @@ def dataframe_to_records(df, max_rows=20):
 def get_latest_krx_trading_date(max_lookback_days=10):
     """
     pykrx에서 조회 가능한 가장 최근 거래일을 찾습니다.
-    장전/주말/휴일에는 오늘 데이터가 없을 수 있으므로 며칠 뒤로 돌아가며 확인합니다.
+
+    개선점:
+    - pykrx 내부 반복 에러 로그를 숨깁니다.
+    - get_nearest_business_day_in_a_week를 우선 사용합니다.
+    - 실패 시 최근 날짜를 몇 개만 조용히 확인합니다.
     """
     if krx_stock is None:
         return None
 
-    for days_ago in range(0, max_lookback_days + 1):
+    today = yyyymmdd_kst(days_ago=0)
+
+    # 1차: pykrx의 최근 영업일 함수 사용
+    try:
+        nearest_day = safe_pykrx_call(
+            krx_stock.get_nearest_business_day_in_a_week,
+            today
+        )
+
+        if nearest_day:
+            return str(nearest_day).replace("-", "")
+
+    except Exception:
+        pass
+
+    # 2차: 최근 날짜를 조용히 확인
+    for days_ago in range(0, min(max_lookback_days, 5) + 1):
         date_text = yyyymmdd_kst(days_ago=days_ago)
+        df = safe_pykrx_call(
+            krx_stock.get_market_ohlcv_by_ticker,
+            date_text,
+            market="KOSPI"
+        )
 
-        try:
-            df = krx_stock.get_market_ohlcv_by_ticker(date_text, market="KOSPI")
-
-            if df is not None and not df.empty:
-                return date_text
-
-        except Exception as error:
-            print(f"KRX 거래일 확인 실패: {date_text} {error}")
+        if is_valid_ohlcv_dataframe(df):
+            return date_text
 
     return None
 
@@ -924,30 +983,34 @@ def get_krx_ticker_name(ticker):
     if krx_stock is None:
         return ticker
 
-    try:
-        return krx_stock.get_market_ticker_name(ticker)
-    except Exception:
-        return ticker
+    name = safe_pykrx_call(krx_stock.get_market_ticker_name, ticker)
+
+    if name:
+        return name
+
+    return ticker
 
 
 def fetch_krx_market_ohlcv_by_ticker(date_text, market):
     """
     특정 거래일의 KOSPI/KOSDAQ 종목별 OHLCV를 가져옵니다.
+
+    실패 시 예외를 던지지 않고 None을 반환합니다.
     """
     if krx_stock is None:
         return None
 
-    try:
-        df = krx_stock.get_market_ohlcv_by_ticker(date_text, market=market)
+    df = safe_pykrx_call(
+        krx_stock.get_market_ohlcv_by_ticker,
+        date_text,
+        market=market
+    )
 
-        if df is None or df.empty:
-            return None
-
-        return df
-
-    except Exception as error:
-        print(f"KRX 종목별 OHLCV 수집 실패: {market} {date_text} {error}")
+    if not is_valid_ohlcv_dataframe(df):
+        print(f"KRX 종목별 OHLCV 사용 불가: {market} {date_text}")
         return None
+
+    return df
 
 
 def fetch_krx_top_trading_value(date_text, market, limit=10):
@@ -1018,6 +1081,8 @@ def fetch_krx_investor_flow(date_text, market):
     """
     투자자별 거래대금/순매수 데이터를 가져옵니다.
     market 예: KOSPI, KOSDAQ
+
+    실패 시 예외를 던지지 않고 확인 필요로 반환합니다.
     """
     if krx_stock is None:
         return {
@@ -1026,17 +1091,18 @@ def fetch_krx_investor_flow(date_text, market):
             "rows": [],
         }
 
-    try:
-        df = krx_stock.get_market_trading_value_by_investor(
-            date_text,
-            date_text,
-            market
-        )
+    df = safe_pykrx_call(
+        krx_stock.get_market_trading_value_by_investor,
+        date_text,
+        date_text,
+        market
+    )
 
+    try:
         if df is None or df.empty:
             return {
                 "status": "확인 필요",
-                "reason": "투자자별 수급 데이터가 비어 있습니다.",
+                "reason": "투자자별 수급 데이터가 비어 있거나 조회 실패했습니다.",
                 "rows": [],
             }
 
@@ -1046,8 +1112,6 @@ def fetch_krx_investor_flow(date_text, market):
         }
 
     except Exception as error:
-        print(f"KRX 투자자별 수급 수집 실패: {market} {date_text} {error}")
-
         return {
             "status": "확인 필요",
             "reason": str(error),
@@ -1455,21 +1519,17 @@ def fetch_krx_market_data():
     """
     pykrx 기반 한국시장 전용 데이터입니다.
 
-    수집 항목:
-    - 최근 거래일
-    - KOSPI/KOSDAQ 투자자별 수급
-    - KOSPI/KOSDAQ 거래대금 상위 종목
-    - KOSPI/KOSDAQ 등락률 상위 종목
-    - 거래대금 기준 업종/테마 자동 분류
-    - KOSPI200 선물 후보 데이터
-    - 외국인 선물 수급 상태
+    개선점:
+    - pykrx/KRX 조회 실패 시 반복 오류를 길게 출력하지 않습니다.
+    - 실패해도 전체 보고서 생성은 계속 진행됩니다.
+    - KRX 데이터 상태를 data_packet에 명확히 표시합니다.
     """
     print("KRX/pykrx 한국시장 데이터 수집 시작")
 
     kospi200_futures = fetch_kospi200_futures_data()
 
     if krx_stock is None:
-        print("pykrx가 설치되어 있지 않아 KRX 데이터 수집을 건너뜁니다.")
+        print("KRX/pykrx 사용 불가: pykrx 패키지가 설치되어 있지 않습니다.")
 
         return {
             "status": "확인 필요",
@@ -1479,6 +1539,7 @@ def fetch_krx_market_data():
             "top_trading_value": {},
             "top_gainers": {},
             "theme_trading_value": [],
+            "theme_trading_value_summary": "확인 필요 - pykrx 미설치",
             "kospi200_futures": kospi200_futures,
             "foreign_futures_flow": fetch_foreign_futures_flow_data(None),
         }
@@ -1486,16 +1547,17 @@ def fetch_krx_market_data():
     latest_date = get_latest_krx_trading_date(max_lookback_days=10)
 
     if not latest_date:
-        print("KRX 최근 거래일을 찾지 못했습니다.")
+        print("KRX/pykrx 수집 실패: 최근 거래일 확인 불가. yfinance 데이터만 사용합니다.")
 
         return {
             "status": "확인 필요",
-            "reason": "최근 거래일 확인 실패",
+            "reason": "KRX 최근 거래일 확인 실패 또는 GitHub Actions 환경에서 KRX 응답 사용 불가",
             "latest_trading_date": None,
             "investor_flows": {},
             "top_trading_value": {},
             "top_gainers": {},
             "theme_trading_value": [],
+            "theme_trading_value_summary": "확인 필요 - KRX 데이터 수집 실패",
             "kospi200_futures": kospi200_futures,
             "foreign_futures_flow": fetch_foreign_futures_flow_data(None),
         }
@@ -1505,7 +1567,6 @@ def fetch_krx_market_data():
         "KOSDAQ": fetch_krx_investor_flow(latest_date, "KOSDAQ"),
     }
 
-    # 거래대금 상위 종목은 업종/테마 집계를 위해 넉넉히 100개까지 수집합니다.
     top_trading_value = {
         "KOSPI": enrich_stocks_with_theme(
             fetch_krx_top_trading_value(latest_date, "KOSPI", limit=100)
@@ -1528,6 +1589,30 @@ def fetch_krx_market_data():
     theme_trading_value = aggregate_theme_trading_value(all_top_value_items)
 
     foreign_futures_flow = fetch_foreign_futures_flow_data(latest_date)
+
+    # KRX가 응답했지만 실질 데이터가 없는 경우도 실패로 처리
+    has_useful_krx_data = (
+        bool(top_trading_value["KOSPI"])
+        or bool(top_trading_value["KOSDAQ"])
+        or investor_flows["KOSPI"].get("status") == "ok"
+        or investor_flows["KOSDAQ"].get("status") == "ok"
+    )
+
+    if not has_useful_krx_data:
+        print("KRX/pykrx 수집 실패: 조회 가능한 실질 데이터가 없습니다. yfinance 데이터만 사용합니다.")
+
+        return {
+            "status": "확인 필요",
+            "reason": "KRX 응답은 있었지만 수급/거래대금 데이터 조회 실패",
+            "latest_trading_date": latest_date,
+            "investor_flows": investor_flows,
+            "top_trading_value": top_trading_value,
+            "top_gainers": top_gainers,
+            "theme_trading_value": [],
+            "theme_trading_value_summary": "확인 필요 - KRX 수급/거래대금 데이터 조회 실패",
+            "kospi200_futures": kospi200_futures,
+            "foreign_futures_flow": foreign_futures_flow,
+        }
 
     krx_data = {
         "status": "ok",
@@ -1575,6 +1660,15 @@ def merge_krx_data_into_market_data(market_data, krx_data):
 
     if krx_data.get("status") != "ok":
         market_data["krx_data_status"] = krx_data.get("reason", "확인 필요")
+        market_data["foreign_spot_flow"] = "확인 필요 - KRX 데이터 수집 실패"
+        market_data["institution_flow"] = "확인 필요 - KRX 데이터 수집 실패"
+        market_data["retail_flow"] = "확인 필요 - KRX 데이터 수집 실패"
+        market_data["leading_sectors_by_volume"] = krx_data.get(
+            "theme_trading_value_summary",
+            "확인 필요 - KRX 데이터 수집 실패"
+        )
+        market_data["leading_stocks_summary"] = "확인 필요 - KRX 거래대금 데이터 수집 실패"
+        market_data["top_gainers_summary"] = "확인 필요 - KRX 등락률 데이터 수집 실패"
         return market_data
 
     market_data["krx_data_status"] = "ok"
