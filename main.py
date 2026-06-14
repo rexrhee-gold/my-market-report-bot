@@ -24,7 +24,7 @@ KST = timezone(timedelta(hours=9))
 UTC = timezone.utc
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
+OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-5.5").strip()
 
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 ALPHAVANTAGE_KEY = os.getenv("ALPHAVANTAGE_KEY")
