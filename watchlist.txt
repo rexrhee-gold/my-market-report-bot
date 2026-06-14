@@ -10,8 +10,6 @@ KOSPI
 KOSDAQ
 USD/KRW
 WTI Oil
-Gold
-Bitcoin
 Hyundai Motor
 Kia
 NAVER
