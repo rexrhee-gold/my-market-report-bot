@@ -1,0 +1,47 @@
+name: Korea Market Intraday Update
+
+on:
+  schedule:
+    # 한국시간 월~금 오전 10:30, 오후 1:30 실행
+    # GitHub Actions cron은 UTC 기준입니다.
+    # UTC 01:30 = 한국시간 10:30
+    # UTC 04:30 = 한국시간 13:30
+    - cron: "30 1,4 * * 1-5"
+
+  workflow_dispatch:
+
+jobs:
+  korea-intraday-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Korea intraday update
+        env:
+          REPORT_MODE: "intraday"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
+          OPENDART_API_KEY: ${{ secrets.OPENDART_API_KEY }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+        run: python korea_market.py
