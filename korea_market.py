@@ -10,6 +10,12 @@ try:
     import yfinance as yf
 except Exception:
     yf = None
+
+try:
+    from pykrx import stock as krx_stock
+except Exception:
+    krx_stock = None
+
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -825,6 +831,441 @@ def first_ok_quote(candidates):
     }
 
 
+
+# =========================
+# KRX / pykrx 한국시장 데이터
+# =========================
+
+def normalize_number(value):
+    """
+    pandas/numpy 숫자 타입을 JSON 저장 가능한 기본 Python 숫자로 변환합니다.
+    """
+    try:
+        if value is None:
+            return None
+
+        if hasattr(value, "item"):
+            value = value.item()
+
+        if isinstance(value, float):
+            if value != value:
+                return None
+
+        return value
+    except Exception:
+        return None
+
+
+def format_krw_amount(value):
+    """
+    원 단위 금액을 사람이 읽기 쉬운 형태로 변환합니다.
+    """
+    value = safe_float(value)
+
+    if value is None:
+        return "확인 필요"
+
+    abs_value = abs(value)
+
+    if abs_value >= 100_000_000_000:
+        return f"{value / 100_000_000_000:.2f}조원"
+
+    if abs_value >= 100_000_000:
+        return f"{value / 100_000_000:.1f}억원"
+
+    return f"{value:,.0f}원"
+
+
+def dataframe_to_records(df, max_rows=20):
+    """
+    pykrx DataFrame을 JSON에 넣기 쉬운 records 형태로 변환합니다.
+    """
+    if df is None or df.empty:
+        return []
+
+    records = []
+
+    for idx, row in df.head(max_rows).iterrows():
+        item = {"index": str(idx)}
+
+        for col in df.columns:
+            value = normalize_number(row[col])
+            item[str(col)] = value
+
+        records.append(item)
+
+    return records
+
+
+def get_latest_krx_trading_date(max_lookback_days=10):
+    """
+    pykrx에서 조회 가능한 가장 최근 거래일을 찾습니다.
+    장전/주말/휴일에는 오늘 데이터가 없을 수 있으므로 며칠 뒤로 돌아가며 확인합니다.
+    """
+    if krx_stock is None:
+        return None
+
+    for days_ago in range(0, max_lookback_days + 1):
+        date_text = yyyymmdd_kst(days_ago=days_ago)
+
+        try:
+            df = krx_stock.get_market_ohlcv_by_ticker(date_text, market="KOSPI")
+
+            if df is not None and not df.empty:
+                return date_text
+
+        except Exception as error:
+            print(f"KRX 거래일 확인 실패: {date_text} {error}")
+
+    return None
+
+
+def get_krx_ticker_name(ticker):
+    if krx_stock is None:
+        return ticker
+
+    try:
+        return krx_stock.get_market_ticker_name(ticker)
+    except Exception:
+        return ticker
+
+
+def fetch_krx_market_ohlcv_by_ticker(date_text, market):
+    """
+    특정 거래일의 KOSPI/KOSDAQ 종목별 OHLCV를 가져옵니다.
+    """
+    if krx_stock is None:
+        return None
+
+    try:
+        df = krx_stock.get_market_ohlcv_by_ticker(date_text, market=market)
+
+        if df is None or df.empty:
+            return None
+
+        return df
+
+    except Exception as error:
+        print(f"KRX 종목별 OHLCV 수집 실패: {market} {date_text} {error}")
+        return None
+
+
+def fetch_krx_top_trading_value(date_text, market, limit=10):
+    """
+    거래대금 상위 종목을 가져옵니다.
+    """
+    df = fetch_krx_market_ohlcv_by_ticker(date_text, market)
+
+    if df is None or df.empty or "거래대금" not in df.columns:
+        return []
+
+    sorted_df = df.sort_values("거래대금", ascending=False).head(limit)
+
+    result = []
+
+    for ticker, row in sorted_df.iterrows():
+        result.append(
+            {
+                "ticker": str(ticker),
+                "name": get_krx_ticker_name(str(ticker)),
+                "close": normalize_number(row.get("종가")),
+                "change": normalize_number(row.get("대비")),
+                "change_pct": normalize_number(row.get("등락률")),
+                "volume": normalize_number(row.get("거래량")),
+                "trading_value": normalize_number(row.get("거래대금")),
+                "trading_value_text": format_krw_amount(row.get("거래대금")),
+            }
+        )
+
+    return result
+
+
+def fetch_krx_top_gainers(date_text, market, limit=10):
+    """
+    등락률 상위 종목을 가져옵니다.
+    """
+    df = fetch_krx_market_ohlcv_by_ticker(date_text, market)
+
+    if df is None or df.empty or "등락률" not in df.columns:
+        return []
+
+    # 거래대금이 너무 작은 종목을 줄이기 위해 거래대금 0 또는 결측은 제외
+    if "거래대금" in df.columns:
+        df = df[df["거래대금"] > 0]
+
+    sorted_df = df.sort_values("등락률", ascending=False).head(limit)
+
+    result = []
+
+    for ticker, row in sorted_df.iterrows():
+        result.append(
+            {
+                "ticker": str(ticker),
+                "name": get_krx_ticker_name(str(ticker)),
+                "close": normalize_number(row.get("종가")),
+                "change": normalize_number(row.get("대비")),
+                "change_pct": normalize_number(row.get("등락률")),
+                "volume": normalize_number(row.get("거래량")),
+                "trading_value": normalize_number(row.get("거래대금")),
+                "trading_value_text": format_krw_amount(row.get("거래대금")),
+            }
+        )
+
+    return result
+
+
+def fetch_krx_investor_flow(date_text, market):
+    """
+    투자자별 거래대금/순매수 데이터를 가져옵니다.
+    market 예: KOSPI, KOSDAQ
+    """
+    if krx_stock is None:
+        return {
+            "status": "확인 필요",
+            "reason": "pykrx 패키지가 설치되어 있지 않습니다.",
+            "rows": [],
+        }
+
+    try:
+        df = krx_stock.get_market_trading_value_by_investor(
+            date_text,
+            date_text,
+            market
+        )
+
+        if df is None or df.empty:
+            return {
+                "status": "확인 필요",
+                "reason": "투자자별 수급 데이터가 비어 있습니다.",
+                "rows": [],
+            }
+
+        return {
+            "status": "ok",
+            "rows": dataframe_to_records(df, max_rows=30),
+        }
+
+    except Exception as error:
+        print(f"KRX 투자자별 수급 수집 실패: {market} {date_text} {error}")
+
+        return {
+            "status": "확인 필요",
+            "reason": str(error),
+            "rows": [],
+        }
+
+
+def find_investor_row(rows, keywords):
+    """
+    pykrx 투자자별 수급 결과에서 개인/외국인/기관 행을 찾습니다.
+    """
+    for row in rows:
+        label = row.get("index", "")
+
+        for keyword in keywords:
+            if keyword in label:
+                return row
+
+    return None
+
+
+def extract_net_buy_value(row):
+    """
+    투자자별 수급 row에서 순매수 금액 컬럼을 찾습니다.
+    pykrx 버전에 따라 컬럼명이 다를 수 있어 '순매수'가 포함된 첫 컬럼을 사용합니다.
+    """
+    if not row:
+        return None
+
+    preferred_columns = ["순매수", "순매수거래대금"]
+
+    for col in preferred_columns:
+        if col in row:
+            return row.get(col)
+
+    for col, value in row.items():
+        if "순매수" in col:
+            return value
+
+    return None
+
+
+def build_single_investor_flow_text(krx_data, investor_name, keywords):
+    """
+    KOSPI/KOSDAQ 투자자별 순매수 요약 문장을 만듭니다.
+    """
+    investor_flows = krx_data.get("investor_flows", {})
+    parts = []
+
+    for market in ["KOSPI", "KOSDAQ"]:
+        market_data = investor_flows.get(market, {})
+        rows = market_data.get("rows", [])
+
+        row = find_investor_row(rows, keywords)
+        net_value = extract_net_buy_value(row)
+
+        if net_value is None:
+            parts.append(f"{market} 확인 필요")
+        else:
+            parts.append(f"{market} {format_krw_amount(net_value)}")
+
+    if not parts:
+        return f"{investor_name}: 확인 필요"
+
+    return f"{investor_name}: " + " / ".join(parts)
+
+
+def format_top_stock_list(items, limit=5):
+    if not items:
+        return "확인 필요"
+
+    parts = []
+
+    for item in items[:limit]:
+        name = item.get("name") or item.get("ticker")
+        change_pct = item.get("change_pct")
+        trading_value_text = item.get("trading_value_text", "")
+
+        if change_pct is None:
+            parts.append(f"{name}({trading_value_text})")
+        else:
+            parts.append(f"{name}({change_pct:+.2f}%, {trading_value_text})")
+
+    return ", ".join(parts)
+
+
+def fetch_krx_market_data():
+    """
+    pykrx 기반 한국시장 전용 데이터입니다.
+
+    수집 항목:
+    - 최근 거래일
+    - KOSPI/KOSDAQ 투자자별 수급
+    - KOSPI/KOSDAQ 거래대금 상위 종목
+    - KOSPI/KOSDAQ 등락률 상위 종목
+    """
+    print("KRX/pykrx 한국시장 데이터 수집 시작")
+
+    if krx_stock is None:
+        print("pykrx가 설치되어 있지 않아 KRX 데이터 수집을 건너뜁니다.")
+
+        return {
+            "status": "확인 필요",
+            "reason": "pykrx 패키지가 설치되어 있지 않습니다.",
+            "latest_trading_date": None,
+            "investor_flows": {},
+            "top_trading_value": {},
+            "top_gainers": {},
+        }
+
+    latest_date = get_latest_krx_trading_date(max_lookback_days=10)
+
+    if not latest_date:
+        print("KRX 최근 거래일을 찾지 못했습니다.")
+
+        return {
+            "status": "확인 필요",
+            "reason": "최근 거래일 확인 실패",
+            "latest_trading_date": None,
+            "investor_flows": {},
+            "top_trading_value": {},
+            "top_gainers": {},
+        }
+
+    investor_flows = {
+        "KOSPI": fetch_krx_investor_flow(latest_date, "KOSPI"),
+        "KOSDAQ": fetch_krx_investor_flow(latest_date, "KOSDAQ"),
+    }
+
+    top_trading_value = {
+        "KOSPI": fetch_krx_top_trading_value(latest_date, "KOSPI", limit=10),
+        "KOSDAQ": fetch_krx_top_trading_value(latest_date, "KOSDAQ", limit=10),
+    }
+
+    top_gainers = {
+        "KOSPI": fetch_krx_top_gainers(latest_date, "KOSPI", limit=10),
+        "KOSDAQ": fetch_krx_top_gainers(latest_date, "KOSDAQ", limit=10),
+    }
+
+    krx_data = {
+        "status": "ok",
+        "data_source": "KRX via pykrx",
+        "latest_trading_date": latest_date,
+        "data_delay_note": "KRX/pykrx 데이터는 장중 실시간 데이터가 아닐 수 있으며, 최근 조회 가능 거래일 기준입니다.",
+        "investor_flows": investor_flows,
+        "top_trading_value": top_trading_value,
+        "top_gainers": top_gainers,
+    }
+
+    print(f"KRX/pykrx 한국시장 데이터 수집 완료: 기준일 {latest_date}")
+
+    return krx_data
+
+
+def merge_krx_data_into_market_data(market_data, krx_data):
+    """
+    yfinance 기반 market_data에 pykrx 한국시장 데이터를 보강합니다.
+    """
+    market_data["krx_data"] = krx_data
+
+    if krx_data.get("status") != "ok":
+        market_data["krx_data_status"] = krx_data.get("reason", "확인 필요")
+        return market_data
+
+    market_data["krx_data_status"] = "ok"
+    market_data["krx_latest_trading_date"] = krx_data.get("latest_trading_date")
+
+    market_data["foreign_spot_flow"] = build_single_investor_flow_text(
+        krx_data,
+        "외국인 현물 수급",
+        ["외국인", "외국인합계"]
+    )
+
+    market_data["institution_flow"] = build_single_investor_flow_text(
+        krx_data,
+        "기관 수급",
+        ["기관", "기관합계", "금융투자", "투신", "연기금"]
+    )
+
+    market_data["retail_flow"] = build_single_investor_flow_text(
+        krx_data,
+        "개인 수급",
+        ["개인"]
+    )
+
+    market_data["foreign_futures_flow"] = "확인 필요 - 외국인 선물 수급은 아직 3차 연결 예정"
+
+    kospi_top_value = krx_data.get("top_trading_value", {}).get("KOSPI", [])
+    kosdaq_top_value = krx_data.get("top_trading_value", {}).get("KOSDAQ", [])
+    kospi_top_gainers = krx_data.get("top_gainers", {}).get("KOSPI", [])
+    kosdaq_top_gainers = krx_data.get("top_gainers", {}).get("KOSDAQ", [])
+
+    market_data["leading_stocks_by_trading_value"] = {
+        "KOSPI": kospi_top_value,
+        "KOSDAQ": kosdaq_top_value,
+    }
+
+    market_data["top_gainers"] = {
+        "KOSPI": kospi_top_gainers,
+        "KOSDAQ": kosdaq_top_gainers,
+    }
+
+    market_data["leading_sectors_by_volume"] = (
+        "거래대금 상위 종목 기준 주도주 후보 - "
+        f"KOSPI: {format_top_stock_list(kospi_top_value, limit=5)} / "
+        f"KOSDAQ: {format_top_stock_list(kosdaq_top_value, limit=5)}"
+    )
+
+    market_data["top_gainers_summary"] = (
+        "등락률 상위 종목 - "
+        f"KOSPI: {format_top_stock_list(kospi_top_gainers, limit=5)} / "
+        f"KOSDAQ: {format_top_stock_list(kosdaq_top_gainers, limit=5)}"
+    )
+
+    return market_data
+
+
+
 def fetch_yfinance_market_data(report_mode):
     """
     한국증시 장전·장중 자동화에 필요한 실제 시장 데이터를 1차로 연결합니다.
@@ -954,6 +1395,9 @@ def fetch_yfinance_market_data(report_mode):
         "us_sector_flow": "확인 필요 - 미국 업종별 세부 흐름은 2차 연결 예정",
     }
 
+    krx_data = fetch_krx_market_data()
+    market_data = merge_krx_data_into_market_data(market_data, krx_data)
+
     ok_count = 0
     check_count = 0
 
@@ -1020,8 +1464,9 @@ def build_data_packet(report_mode, report_config):
         "important_note": (
             "KOSPI/KOSDAQ, 삼성전자, SK하이닉스, 원/달러 환율, 미국 지수·선물, "
             "금리·달러·유가·금 일부 데이터는 yfinance 기반으로 자동 수집됩니다. "
-            "무료 공개 데이터라 지연 시세일 수 있습니다. "
-            "외국인·기관·개인 수급, 거래대금 상위 업종, 실제 KOSPI200 선물은 아직 2차 연결 예정입니다. "
+            "한국시장 투자자별 수급과 거래대금 상위 종목은 pykrx 기반으로 자동 수집됩니다. "
+            "무료 공개/스크래핑 데이터라 지연되거나 일부 항목이 누락될 수 있습니다. "
+            "외국인 선물 수급, 실제 KOSPI200 선물, 업종별 거래대금은 아직 3차 연결 예정입니다. "
             "명확하지 않은 항목은 반드시 '확인 필요'로 표시하세요."
         ),
     }
