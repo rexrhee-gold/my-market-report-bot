@@ -2,7 +2,10 @@ name: Daily Market Report
 
 on:
   schedule:
+    # 한국시간 월~금 오전 7시 실행
+    # GitHub cron은 UTC 기준이라, KST 07:00 = UTC 전날 22:00
     - cron: "0 22 * * 0-4"
+
   workflow_dispatch:
 
 jobs:
