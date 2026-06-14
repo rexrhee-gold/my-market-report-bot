@@ -5,15 +5,35 @@ import hashlib
 import requests
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
+
 from dotenv import load_dotenv
 from openai import OpenAI
+
+
+# =========================
+# 기본 설정
+# =========================
 
 load_dotenv()
 
 KST = timezone(timedelta(hours=9))
 UTC = timezone.utc
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
+
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
+
+EMAIL_TO = os.getenv("EMAIL_TO")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 def now_kst():
@@ -24,233 +44,258 @@ def since_utc(hours=24):
     return datetime.now(UTC) - timedelta(hours=hours)
 
 
-def dedupe(items):
-    seen = set()
-    result = []
-
-    for item in items:
-        key_raw = f"{item.get('title','')}|{item.get('url','')}"
-        key = hashlib.sha256(key_raw.encode("utf-8")).hexdigest()
-
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-
-    return result
-
+# =========================
+# 뉴스 수집
+# =========================
 
 def fetch_newsapi():
-    api_key = os.getenv("NEWSAPI_KEY")
-    if not api_key:
+    """
+    NewsAPI에서 최근 24시간 시장 관련 뉴스를 가져옵니다.
+    """
+    if not NEWSAPI_KEY:
+        print("NEWSAPI_KEY가 없습니다. 뉴스 수집을 건너뜁니다.")
         return []
 
     query = (
-        "stock market OR equities OR inflation OR fed OR rates OR "
-        "semiconductor OR AI OR oil OR dollar OR Korea market OR KOSPI"
+        "stock market OR equities OR inflation OR fed OR interest rates OR "
+        "semiconductor OR AI OR oil OR dollar OR bond yield OR Korea market OR KOSPI"
     )
 
     url = "https://newsapi.org/v2/everything"
+
     params = {
         "q": query,
         "from": since_utc(24).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sortBy": "publishedAt",
         "language": "en",
         "pageSize": 50,
-        "apiKey": api_key,
+        "apiKey": NEWSAPI_KEY,
     }
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
+    print("뉴스 데이터 수집 시작")
 
-    articles = r.json().get("articles", [])
-    return [
-        {
-            "source": a.get("source", {}).get("name"),
-            "title": a.get("title"),
-            "description": a.get("description"),
-            "url": a.get("url"),
-            "published_at": a.get("publishedAt"),
-            "provider": "NewsAPI",
-        }
-        for a in articles
-        if a.get("title") and a.get("url")
-    ]
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+
+    articles = response.json().get("articles", [])
+
+    result = []
+
+    for article in articles:
+        title = article.get("title")
+        url = article.get("url")
+
+        if not title or not url:
+            continue
+
+        result.append(
+            {
+                "source": article.get("source", {}).get("name"),
+                "title": title,
+                "description": article.get("description"),
+                "url": url,
+                "published_at": article.get("publishedAt"),
+                "provider": "NewsAPI",
+            }
+        )
+
+    print(f"뉴스 {len(result)}개 수집 완료")
+    return result
 
 
-def fetch_alpha_vantage_news():
-    api_key = os.getenv("ALPHAVANTAGE_KEY")
-    if not api_key:
-        return []
+def dedupe_articles(articles):
+    """
+    제목과 URL 기준으로 중복 뉴스를 제거합니다.
+    """
+    seen = set()
+    result = []
 
-    url = "https://www.alphavantage.co/query"
-    params = {
-        "function": "NEWS_SENTIMENT",
-        "topics": "financial_markets,economy_monetary,economy_macro,technology",
-        "sort": "LATEST",
-        "limit": 50,
-        "apikey": api_key,
-    }
+    for article in articles:
+        key_raw = f"{article.get('title', '')}|{article.get('url', '')}"
+        key = hashlib.sha256(key_raw.encode("utf-8")).hexdigest()
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
+        if key not in seen:
+            seen.add(key)
+            result.append(article)
 
-    feed = r.json().get("feed", [])
-    return [
-        {
-            "source": a.get("source"),
-            "title": a.get("title"),
-            "description": a.get("summary"),
-            "url": a.get("url"),
-            "published_at": a.get("time_published"),
-            "overall_sentiment_score": a.get("overall_sentiment_score"),
-            "overall_sentiment_label": a.get("overall_sentiment_label"),
-            "provider": "Alpha Vantage",
-        }
-        for a in feed
-        if a.get("title") and a.get("url")
-    ]
+    return result
 
 
 def build_data_packet():
+    """
+    OpenAI에 넣을 데이터 묶음을 만듭니다.
+    """
     articles = []
+
     articles.extend(fetch_newsapi())
-    articles.extend(fetch_alpha_vantage_news())
 
-    articles = dedupe(articles)
+    articles = dedupe_articles(articles)
 
-    return {
-        "generated_at_kst": now_kst().isoformat(),
+    data_packet = {
+        "generated_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S KST"),
         "article_count": len(articles),
         "articles": articles[:80],
         "instruction": "이 데이터만 근거로 오늘의 증시 분석 보고서를 작성하라.",
     }
 
+    print(f"최종 기사 수: {len(articles)}개")
+    return data_packet
+
+
+# =========================
+# OpenAI 보고서 생성
+# =========================
+
+def load_expert_prompt():
+    """
+    prompts/expert.md 파일에서 전문가 프롬프트를 읽습니다.
+    """
+    prompt_path = "prompts/expert.md"
+
+    if not os.path.exists(prompt_path):
+        raise FileNotFoundError(
+            "prompts/expert.md 파일이 없습니다. "
+            "GitHub 저장소에 prompts/expert.md 파일을 만들어 주세요."
+        )
+
+    with open(prompt_path, "r", encoding="utf-8") as file:
+        return file.read()
+
 
 def generate_report(data_packet):
-    with open("prompts/expert.md", "r", encoding="utf-8") as f:
-        expert_prompt = f.read()
+    """
+    수집한 뉴스 데이터를 OpenAI에 넣어 증시 분석 보고서를 생성합니다.
+    """
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY가 없습니다.")
+
+    expert_prompt = load_expert_prompt()
 
     user_input = f"""
 오늘 날짜: {now_kst().strftime('%Y-%m-%d %H:%M KST')}
 
-아래는 최근 24시간 내 수집한 시장 관련 데이터다.
-기사 전문이 아니라 제목, 요약, 출처, URL, 발행시각 중심으로 제공한다.
+아래는 최근 24시간 내 수집한 시장 관련 뉴스 데이터입니다.
+기사 전문이 아니라 제목, 요약, 출처, URL, 발행시각 중심으로 제공합니다.
 
 DATA:
 {json.dumps(data_packet, ensure_ascii=False, indent=2)}
 
-요구사항:
-- 한국어로 작성
-- Markdown 형식
-- 출처와 링크를 가능한 한 유지
-- 투자 권유가 아니라 분석 참고자료로 작성
+작성 요구사항:
+- 한국어로 작성하세요.
+- Markdown 형식으로 작성하세요.
+- 보고서 맨 위에 '오늘 한 줄 요약'을 넣으세요.
+- 핵심 이슈 5개를 정리하세요.
+- 미국 증시 영향, 한국 증시 영향, 환율/금리/유가 영향을 분리해서 설명하세요.
+- 주목할 섹터와 리스크 요인을 정리하세요.
+- 가능한 경우 기사 출처와 URL을 함께 표시하세요.
+- 투자 권유가 아니라 참고용 분석이라는 문구를 포함하세요.
 """
 
+    print("OpenAI 보고서 생성 시작")
+
     response = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-5.5"),
+        model=OPENAI_MODEL,
         instructions=expert_prompt,
         input=user_input,
         max_output_tokens=6000,
     )
 
-    return response.output_text
+    report = response.output_text
+
+    if not report or not report.strip():
+        raise ValueError("OpenAI 응답이 비어 있습니다.")
+
+    print("OpenAI 보고서 생성 완료")
+    return report
 
 
-def send_slack(report):
-    webhook = os.getenv("SLACK_WEBHOOK_URL")
-    if not webhook:
-        return
-
-    payload = {
-        "text": f"*오늘의 증시 분석 보고서*\n\n{report}"
-    }
-
-    r = requests.post(webhook, json=payload, timeout=30)
-    r.raise_for_status()
-
-
-def send_notion(report):
-    token = os.getenv("NOTION_TOKEN")
-    parent_page_id = os.getenv("NOTION_PARENT_PAGE_ID")
-
-    if not token or not parent_page_id:
-        return
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json",
-    }
-
-    title = f"증시 분석 보고서 - {now_kst().strftime('%Y-%m-%d')}"
-
-    chunks = [report[i:i + 1800] for i in range(0, len(report), 1800)]
-
-    children = [
-        {
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {"content": chunk}
-                    }
-                ]
-            },
-        }
-        for chunk in chunks[:80]
-    ]
-
-    payload = {
-        "parent": {"page_id": parent_page_id},
-        "properties": {
-            "title": [
-                {
-                    "text": {
-                        "content": title
-                    }
-                }
-            ]
-        },
-        "children": children,
-    }
-
-    r = requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload, timeout=30)
-    r.raise_for_status()
-
+# =========================
+# 이메일 발송
+# =========================
 
 def send_email(report):
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_password = os.getenv("SMTP_PASSWORD")
-    email_to = os.getenv("EMAIL_TO")
+    """
+    생성된 보고서를 이메일로 보냅니다.
+    """
+    if not EMAIL_TO:
+        print("EMAIL_TO가 없어서 이메일 발송을 건너뜁니다.")
+        return
 
-    if not all([smtp_host, smtp_user, smtp_password, email_to]):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        print("SMTP_USER 또는 SMTP_PASSWORD가 없어서 이메일 발송을 건너뜁니다.")
         return
 
     subject = f"[자동] 증시 분석 보고서 - {now_kst().strftime('%Y-%m-%d')}"
+
     msg = MIMEText(report, "plain", "utf-8")
     msg["Subject"] = subject
-    msg["From"] = smtp_user
-    msg["To"] = email_to
+    msg["From"] = SMTP_USER
+    msg["To"] = EMAIL_TO
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
+    print("이메일 발송 시작")
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
-        server.login(smtp_user, smtp_password)
+        server.login(SMTP_USER, SMTP_PASSWORD)
         server.send_message(msg)
 
+    print("이메일 발송 완료")
+
+
+# =========================
+# Slack 발송
+# =========================
+
+def send_slack(report):
+    """
+    생성된 보고서를 Slack 채널로 보냅니다.
+    """
+    if not SLACK_WEBHOOK_URL:
+        print("SLACK_WEBHOOK_URL이 없어서 Slack 발송을 건너뜁니다.")
+        return
+
+    # Slack 메시지는 너무 길면 보기 불편하므로 앞부분만 보냅니다.
+    slack_text = report[:3500]
+
+    if len(report) > 3500:
+        slack_text += "\n\n...(보고서가 길어 일부만 표시했습니다. 전체 내용은 이메일을 확인하세요.)"
+
+    payload = {
+        "text": f"*오늘의 증시 분석 보고서*\n\n{slack_text}"
+    }
+
+    print("Slack 발송 시작")
+
+    response = requests.post(
+        SLACK_WEBHOOK_URL,
+        json=payload,
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Slack 발송 실패: {response.status_code} {response.text}")
+
+    print("Slack 발송 완료")
+
+
+# =========================
+# 메인 실행
+# =========================
 
 def main():
+    print("Daily Market Report 시작")
+
     data_packet = build_data_packet()
+
+    if data_packet["article_count"] == 0:
+        print("수집된 뉴스가 없습니다. 그래도 보고서를 생성합니다.")
+
     report = generate_report(data_packet)
 
-    send_slack(report)
-    send_notion(report)
     send_email(report)
+    send_slack(report)
 
-    print("Report sent successfully.")
+    print("Daily Market Report 완료")
 
 
 if __name__ == "__main__":
