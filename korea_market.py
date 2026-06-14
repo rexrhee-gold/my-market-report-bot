@@ -84,10 +84,10 @@ def korean_time_label():
 
 REPORT_CONFIG = {
     "0740": {
-        "name": "한국증시 프리마켓 대응 리포트",
+        "name": "프리마켓 대응 리포트",
         "prompt_path": "prompts/korea_0740.md",
-        "subject_prefix": "[자동] 한국증시 프리마켓 대응 리포트",
-        "slack_title": "🇰🇷 한국증시 프리마켓 대응 리포트",
+        "subject_prefix": "[자동] 프리마켓 대응 리포트",
+        "slack_title": "🇰🇷 프리마켓 대응 리포트",
     },
     "0840": {
         "name": "장전 최종 체크",
