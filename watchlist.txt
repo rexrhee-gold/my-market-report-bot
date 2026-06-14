@@ -1,0 +1,13 @@
+Samsung Electronics
+SK Hynix
+Nvidia
+Tesla
+Apple
+Microsoft
+Meta
+Google
+KOSPI
+KOSDAQ
+USD/KRW
+WTI
+Gold
