@@ -41,7 +41,54 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID")
 
+# REPORT_MODE
+# - morning: 아침 증시 분석 보고서
+# - close: 장마감 리뷰 보고서
+REPORT_MODE = os.getenv("REPORT_MODE", "morning").strip().lower()
+
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# =========================
+# 보고서 모드 함수
+# =========================
+
+def get_report_mode():
+    """
+    실행 모드를 반환합니다.
+    GitHub Actions에서 REPORT_MODE=close로 주면 장마감 리뷰로 실행됩니다.
+    """
+    mode = (os.getenv("REPORT_MODE", REPORT_MODE) or "morning").strip().lower()
+
+    if mode in ["close", "closing", "market_close", "after_close", "end"]:
+        return "close"
+
+    return "morning"
+
+
+def get_report_label(mode=None):
+    mode = mode or get_report_mode()
+
+    if mode == "close":
+        return "장마감 리뷰"
+
+    return "증시 분석"
+
+
+def get_report_emoji(mode=None):
+    mode = mode or get_report_mode()
+
+    if mode == "close":
+        return "📉"
+
+    return "📈"
+
+
+def get_report_title(created_at=None, mode=None):
+    mode = mode or get_report_mode()
+    created_at = created_at or now_kst()
+    label = get_report_label(mode)
+    return f"{label} 보고서 - {created_at.strftime('%Y-%m-%d %H:%M KST')}"
 
 
 # =========================
@@ -739,12 +786,14 @@ def build_risk_section(data_packet):
     보고서 맨 위에 붙일 위험도 점수 섹션을 만듭니다.
     """
     risk = data_packet.get("market_risk", {})
+    mode = data_packet.get("report_mode") or get_report_mode()
 
     score = risk.get("score", "확인 필요")
     level = risk.get("level", "확인 필요")
     reasons = risk.get("reasons", [])
 
-    section = "## 오늘의 위험도 점수\n\n"
+    heading = "장마감 위험도 점검" if mode == "close" else "오늘의 위험도 점수"
+    section = f"## {heading}\n\n"
     section += f"- 점수: {score} / 10\n"
     section += f"- 판단: {level}\n"
     section += "- 근거:\n"
@@ -762,6 +811,9 @@ def build_risk_section(data_packet):
 # =========================
 
 def build_data_packet():
+    mode = get_report_mode()
+    report_label = get_report_label(mode)
+
     articles = []
     watchlist = load_watchlist()
 
@@ -781,6 +833,8 @@ def build_data_packet():
     articles = dedupe_articles(articles)
 
     data_packet = {
+        "report_mode": mode,
+        "report_label": report_label,
         "generated_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S KST"),
         "article_count": len(articles),
         "newsapi_article_count": len(newsapi_articles),
@@ -793,12 +847,13 @@ def build_data_packet():
         "articles": articles[:100],
         "opendart_disclosures": important_dart_disclosures,
         "opendart_all_disclosures_sample": scored_dart_disclosures[:20],
-        "instruction": "NewsAPI, Alpha Vantage, OpenDART 중요 공시 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
+        "instruction": f"NewsAPI, Alpha Vantage, OpenDART 중요 공시 데이터를 근거로 오늘의 {report_label} 보고서를 작성하라.",
     }
 
     market_risk = calculate_market_risk(data_packet)
     data_packet["market_risk"] = market_risk
 
+    print(f"보고서 모드: {report_label}")
     print(f"NewsAPI 기사 수: {len(newsapi_articles)}개")
     print(f"Alpha Vantage 기사 수: {len(alpha_articles)}개")
     print(f"OpenDART 전체 공시 수: {len(dart_disclosures)}개")
@@ -829,42 +884,38 @@ def load_expert_prompt():
         return file.read()
 
 
-def generate_report(data_packet):
-    if not OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY가 없습니다.")
+def build_report_user_input(data_packet):
+    """
+    보고서 모드에 따라 OpenAI에 전달할 작성 요청을 만듭니다.
+    """
+    mode = data_packet.get("report_mode") or get_report_mode()
+    report_label = data_packet.get("report_label") or get_report_label(mode)
+    generated_at = now_kst().strftime('%Y-%m-%d %H:%M KST')
+    data_json = json.dumps(data_packet, ensure_ascii=False, indent=2)
 
-    expert_prompt = load_expert_prompt()
-
-    user_input = f"""
-오늘 날짜: {now_kst().strftime('%Y-%m-%d %H:%M KST')}
-
-아래는 최근 72시간 내 수집한 시장 관련 데이터입니다.
-기사 전문이 아니라 제목, 요약, 출처, URL, 발행시각 중심으로 제공합니다.
-
+    common_rules = f"""
 DATA:
-{json.dumps(data_packet, ensure_ascii=False, indent=2)}
+{data_json}
 
-작성 요구사항:
+공통 작성 원칙:
 - 한국어로 작성하세요.
 - Markdown 형식으로 작성하세요.
-- 보고서 맨 위에 '오늘 한 줄 요약'을 넣으세요.
-- 핵심 이슈 5개를 정리하세요.
-- 미국 증시 영향, 한국 증시 영향, 환율/금리/유가 영향을 분리해서 설명하세요.
-- 주목할 섹터와 리스크 요인을 정리하세요.
 - 가능한 경우 기사 출처와 URL을 함께 표시하세요.
-- 투자 권유가 아니라 참고용 분석이라는 문구를 포함하세요.
+- 확실하지 않은 데이터는 반드시 "확인 필요"라고 표시하세요.
+- 투자 권유가 아니라 참고용 분석 자료라는 문구를 포함하세요.
+- 문단을 너무 길게 쓰지 말고 짧게 나누세요.
 
 위험도 점수 활용 요구사항:
 - data_packet 안의 market_risk를 참고하세요.
-- 위험도 점수는 Python 코드가 보고서 맨 위에 자동 추가하므로 본문에서 별도 섹션으로 반복하지 마세요.
-- 다만 리스크 요인과 오늘 체크리스트에는 위험도 점수의 근거를 반영하세요.
+- 위험도 점수 섹션은 Python 코드가 보고서 맨 위에 자동 추가하므로 본문에서 같은 섹션을 반복하지 마세요.
+- 다만 리스크 요인과 체크리스트에는 위험도 점수의 근거를 반영하세요.
 
 OpenDART 공시 활용 요구사항:
 - data_packet 안의 opendart_disclosures 항목은 중요도 A/B/C 기준으로 선별된 공시입니다.
 - OpenDART 공시는 한국 기업 분석에서 공식 자료로 취급하세요.
 - 중요 공시가 있으면 관심 종목 영향 분석과 리스크 요인에 반영하세요.
-- 공시 제목만 보고 과도하게 해석하지 말고, 확인이 필요한 부분은 “공시 원문 확인 필요”라고 표시하세요.
-- 한국 기업 공시 체크 섹션은 Python 코드가 보고서 맨 마지막에 자동으로 추가하므로 본문에서는 중복 표를 만들지 마세요.
+- 공시 제목만 보고 과도하게 해석하지 말고, 확인이 필요한 부분은 "공시 원문 확인 필요"라고 표시하세요.
+- "## 한국 기업 공시 체크" 섹션은 Python 코드가 보고서 맨 마지막에 자동으로 추가하므로 본문에서는 중복 표를 만들지 마세요.
 
 Alpha Vantage 데이터 활용 요구사항:
 - provider가 "Alpha Vantage"인 뉴스는 감성 분석 정보를 함께 참고하세요.
@@ -876,17 +927,100 @@ Alpha Vantage 데이터 활용 요구사항:
 - data_packet 안의 watchlist 항목을 반드시 확인하세요.
 - 각 관심 종목에 대해 오늘 뉴스와 직접 관련이 있으면 상세히 분석하세요.
 - 직접 관련 뉴스가 없더라도 매크로, 금리, 환율, 섹터 흐름 관점에서 간단히 영향도를 평가하세요.
-- 관심 종목별 영향도를 긍정 / 부정 / 중립 / 확인 필요 중 하나로 표시하세요.
+- 관심 종목별 영향도는 긍정 / 부정 / 중립 / 확인 필요 중 하나로 표시하세요.
 - 관심 종목 분석은 표로 작성하세요.
 
 Notion 저장 형식 요구사항:
-- 섹션 제목은 반드시 Markdown 제목 형식으로 작성하세요.
 - 큰 섹션은 ## 제목 형식을 사용하세요.
 - 하위 섹션은 ### 제목 형식을 사용하세요.
 - 핵심 항목은 - 목록 형식으로 작성하세요.
 - 표가 필요한 경우 Markdown 표 형식으로 작성하세요.
-- 문단을 너무 길게 쓰지 말고 짧게 나누세요.
 """
+
+    if mode == "close":
+        return f"""
+오늘 날짜: {generated_at}
+보고서 종류: {report_label}
+
+아래는 한국장 마감 이후 확인할 시장 관련 데이터입니다.
+실제 KOSPI/KOSDAQ 등락률, 종가, 거래대금 데이터가 DATA에 없으면 임의로 만들지 말고 "확인 필요"라고 표시하세요.
+뉴스, Alpha Vantage 감성, OpenDART 공시, 관심 종목 목록을 바탕으로 장마감 리뷰 보고서를 작성하세요.
+
+작성 요구사항:
+- 보고서 맨 위 본문 섹션은 반드시 `## 오늘 장마감 한 줄 리뷰`로 시작하세요.
+- 오늘 한국장이 어떤 분위기로 마감했는지 복기하세요.
+- KOSPI, KOSDAQ, 환율, 금리, 유가 데이터가 없으면 "확인 필요"로 표시하세요.
+- 오늘 확인된 핵심 이슈 5개를 정리하세요.
+- 반도체, 2차전지, 자동차, 금융, 플랫폼/AI 등 주요 섹터별 장마감 영향을 정리하세요.
+- 관심 종목은 장마감 관점에서 긍정 / 부정 / 중립 / 확인 필요로 평가하세요.
+- OpenDART 공시가 있으면 장마감 이후 또는 익일 주가에 영향을 줄 수 있는지 구분하세요.
+- 마지막에는 `## 내일 체크포인트` 섹션을 작성하세요.
+
+출력 구조:
+
+## 오늘 장마감 한 줄 리뷰
+
+## 한국장 마감 리뷰
+
+## 오늘 확인된 핵심 이슈 5개
+
+## 주요 섹터 장마감 영향
+
+## 관심 종목 장마감 리뷰
+
+## 리스크 요인
+
+## 내일 체크포인트
+
+## 출처 및 확인 필요 사항
+{common_rules}
+"""
+
+    return f"""
+오늘 날짜: {generated_at}
+보고서 종류: {report_label}
+
+아래는 최근 72시간 내 수집한 시장 관련 데이터입니다.
+기사 전문이 아니라 제목, 요약, 출처, URL, 발행시각 중심으로 제공합니다.
+
+작성 요구사항:
+- 보고서 맨 위 본문 섹션은 반드시 `## 오늘 한 줄 요약`으로 시작하세요.
+- 핵심 이슈 5개를 정리하세요.
+- 미국 증시 영향, 한국 증시 영향, 환율/금리/유가 영향을 분리해서 설명하세요.
+- 주목할 섹터와 리스크 요인을 정리하세요.
+- 오늘 투자자가 확인해야 할 체크리스트를 작성하세요.
+
+출력 구조:
+
+## 오늘 한 줄 요약
+
+## 핵심 이슈 5개
+
+## 한국 증시 영향
+
+## 미국 증시 영향
+
+## 환율·금리·유가 영향
+
+## 주목할 섹터
+
+## 관심 종목 영향 분석
+
+## 리스크 요인
+
+## 오늘 체크리스트
+
+## 출처 및 확인 필요 사항
+{common_rules}
+"""
+
+
+def generate_report(data_packet):
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY가 없습니다.")
+
+    expert_prompt = load_expert_prompt()
+    user_input = build_report_user_input(data_packet)
 
     print("OpenAI 보고서 생성 시작")
 
@@ -996,7 +1130,8 @@ def send_email(report):
         print("SMTP_USER 또는 SMTP_PASSWORD가 없어서 이메일 발송을 건너뜁니다.")
         return
 
-    subject = f"[자동] 증시 분석 보고서 - {now_kst().strftime('%Y-%m-%d')}"
+    report_label = get_report_label()
+    subject = f"[자동] {report_label} 보고서 - {now_kst().strftime('%Y-%m-%d')}"
 
     msg = MIMEText(report, "plain", "utf-8")
     msg["Subject"] = subject
@@ -1078,20 +1213,37 @@ def truncate_slack_message(message, max_chars=9000):
 def build_slack_summary(report, data_packet=None, notion_url=None):
     """
     Slack에 보낼 확장 요약 메시지를 만듭니다.
+    REPORT_MODE에 따라 아침 보고서와 장마감 리뷰의 요약 구조를 다르게 만듭니다.
     """
     data_packet = data_packet or {}
+
+    mode = data_packet.get("report_mode") or get_report_mode()
+    report_label = data_packet.get("report_label") or get_report_label(mode)
+    emoji = get_report_emoji(mode)
 
     market_risk = data_packet.get("market_risk", {})
     risk_score = market_risk.get("score", "확인 필요")
     risk_level = market_risk.get("level", "확인 필요")
     risk_reasons = market_risk.get("reasons", [])
 
-    one_line_summary = extract_section_lines(report, "오늘 한 줄 요약", max_lines=6)
-    key_issues = extract_section_lines(report, "핵심 이슈 5개", max_lines=12)
-    watchlist_lines = extract_section_lines(report, "관심 종목 영향 분석", max_lines=8)
-    risk_lines = extract_section_lines(report, "리스크 요인", max_lines=6)
+    if mode == "close":
+        one_line_summary = extract_section_lines(report, "오늘 장마감 한 줄 리뷰", max_lines=6)
+        market_review_lines = extract_section_lines(report, "한국장 마감 리뷰", max_lines=8)
+        key_issues = extract_section_lines(report, "오늘 확인된 핵심 이슈", max_lines=12)
+        sector_lines = extract_section_lines(report, "주요 섹터 장마감 영향", max_lines=8)
+        watchlist_lines = extract_section_lines(report, "관심 종목 장마감 리뷰", max_lines=8)
+        risk_lines = extract_section_lines(report, "리스크 요인", max_lines=6)
+        checklist_lines = extract_section_lines(report, "내일 체크포인트", max_lines=5)
+    else:
+        one_line_summary = extract_section_lines(report, "오늘 한 줄 요약", max_lines=6)
+        market_review_lines = []
+        key_issues = extract_section_lines(report, "핵심 이슈 5개", max_lines=12)
+        sector_lines = extract_section_lines(report, "주목할 섹터", max_lines=8)
+        watchlist_lines = extract_section_lines(report, "관심 종목 영향 분석", max_lines=8)
+        risk_lines = extract_section_lines(report, "리스크 요인", max_lines=6)
+        checklist_lines = extract_section_lines(report, "오늘 체크리스트", max_lines=5)
+
     dart_lines = extract_section_lines(report, "한국 기업 공시 체크", max_lines=8)
-    checklist_lines = extract_section_lines(report, "오늘 체크리스트", max_lines=5)
 
     if not one_line_summary:
         one_line_summary = ["보고서 생성 완료. 전체 내용은 Notion 또는 이메일에서 확인하세요."]
@@ -1107,40 +1259,55 @@ def build_slack_summary(report, data_packet=None, notion_url=None):
     total_article_count = data_packet.get("article_count", 0)
     watchlist_count = data_packet.get("watchlist_count", 0)
 
-    message = "📈 *오늘의 증시 분석 보고서 생성 완료*\n\n"
+    message = f"{emoji} *오늘의 {report_label} 보고서 생성 완료*\n\n"
 
-    message += "*오늘의 위험도 점수*\n"
+    risk_title = "장마감 위험도 점검" if mode == "close" else "오늘의 위험도 점수"
+    message += f"*{risk_title}*\n"
     message += f"• {risk_score} / 10 · {risk_level}\n"
 
     for reason in risk_reasons[:3]:
         message += f"• {reason}\n"
 
-    message += "\n*1. 오늘 한 줄 요약*\n"
+    summary_title = "1. 장마감 한 줄 리뷰" if mode == "close" else "1. 오늘 한 줄 요약"
+    message += f"\n*{summary_title}*\n"
     for line in one_line_summary:
         message += f"• {line}\n"
 
+    if market_review_lines:
+        message += "\n*2. 한국장 마감 리뷰*\n"
+        for line in market_review_lines:
+            message += f"• {line}\n"
+
     if key_issues:
-        message += "\n*2. 핵심 이슈*\n"
+        issue_no = "3" if market_review_lines else "2"
+        message += f"\n*{issue_no}. 핵심 이슈*\n"
         for line in key_issues:
             message += f"• {line}\n"
 
+    if sector_lines:
+        message += "\n*주요 섹터*\n"
+        for line in sector_lines:
+            message += f"• {line}\n"
+
     if watchlist_lines:
-        message += "\n*3. 관심 종목 영향 분석*\n"
+        title = "관심 종목 장마감 리뷰" if mode == "close" else "관심 종목 영향 분석"
+        message += f"\n*{title}*\n"
         for line in watchlist_lines:
             message += f"• {line}\n"
 
     if risk_lines:
-        message += "\n*4. 주요 리스크*\n"
+        message += "\n*주요 리스크*\n"
         for line in risk_lines:
             message += f"• {line}\n"
 
     if dart_lines:
-        message += "\n*5. 한국 기업 공시 체크*\n"
+        message += "\n*한국 기업 공시 체크*\n"
         for line in dart_lines:
             message += f"• {line}\n"
 
     if checklist_lines:
-        message += "\n*6. 오늘 체크리스트*\n"
+        checklist_title = "내일 체크포인트" if mode == "close" else "오늘 체크리스트"
+        message += f"\n*{checklist_title}*\n"
         for line in checklist_lines:
             message += f"• {line}\n"
 
@@ -1349,9 +1516,11 @@ def send_notion(report, data_packet=None):
         return None
 
     created_at = now_kst()
-    title = f"증시 분석 보고서 - {created_at.strftime('%Y-%m-%d %H:%M KST')}"
 
     data_packet = data_packet or {}
+    mode = data_packet.get("report_mode") or get_report_mode()
+    report_label = data_packet.get("report_label") or get_report_label(mode)
+    title = get_report_title(created_at=created_at, mode=mode)
 
     market_risk = data_packet.get("market_risk", {})
     risk_score = market_risk.get("score", "확인 필요")
@@ -1379,8 +1548,10 @@ def send_notion(report, data_packet=None):
         "Content-Type": "application/json",
     }
 
+    risk_heading = "장마감 위험도 점검" if mode == "close" else "오늘의 위험도 점수"
+
     risk_blocks = [
-        make_text_block("heading_2", "오늘의 위험도 점수"),
+        make_text_block("heading_2", risk_heading),
         make_text_block("paragraph", f"{risk_score} / 10 · {risk_level}"),
     ]
 
@@ -1394,7 +1565,7 @@ def send_notion(report, data_packet=None):
     intro_blocks = [
         make_text_block("heading_1", title),
         make_text_block("paragraph", f"생성 시각: {created_at.strftime('%Y-%m-%d %H:%M:%S KST')}"),
-        make_text_block("paragraph", "자동 생성된 증시 분석 보고서입니다."),
+        make_text_block("paragraph", f"자동 생성된 {report_label} 보고서입니다."),
         make_text_block("paragraph", "주의: 이 보고서는 투자 권유가 아니라 참고용 분석 자료입니다."),
         make_divider_block(),
     ] + risk_blocks + [
@@ -1468,7 +1639,9 @@ def send_notion(report, data_packet=None):
 # =========================
 
 def main():
-    print("Daily Market Report 시작")
+    mode = get_report_mode()
+    report_label = get_report_label(mode)
+    print(f"Daily Market Report 시작: {report_label}")
 
     data_packet = build_data_packet()
 
@@ -1493,7 +1666,7 @@ def main():
         notion_url=notion_url,
     )
 
-    print("Daily Market Report 완료")
+    print(f"Daily Market Report 완료: {report_label}")
 
 
 if __name__ == "__main__":
