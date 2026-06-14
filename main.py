@@ -617,7 +617,9 @@ Notion 저장 형식 요구사항:
 
     if not report or not report.strip():
         raise ValueError("OpenAI 응답이 비어 있습니다.")
-
+    
+    print("OpenAI 보고서 생성 완료")
+    return report
 
 
 def build_opendart_section(data_packet):
@@ -653,8 +655,6 @@ def build_opendart_section(data_packet):
 
     return section
 
-    print("OpenAI 보고서 생성 완료")
-    return report
     
 # =========================
 # 이메일 발송
@@ -973,6 +973,9 @@ def main():
         print("수집된 뉴스가 없습니다. 그래도 보고서를 생성합니다.")
 
     report = generate_report(data_packet)
+
+    if not report:
+        raise ValueError("OpenAI 보고서 생성 결과가 비어 있습니다. generate_report()의 return report를 확인하세요.")
 
     # OpenDART 공시 섹션을 보고서 맨 마지막에 강제로 추가
     report = report + build_opendart_section(data_packet)
