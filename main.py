@@ -668,9 +668,9 @@ def send_slack(report):
         print("SLACK_WEBHOOK_URL이 없어서 Slack 발송을 건너뜁니다.")
         return
 
-    slack_text = report[:3500]
+    slack_text = report[:7000]
 
-    if len(report) > 3500:
+    if len(report) > 7000:
         slack_text += "\n\n...(보고서가 길어 일부만 표시했습니다. 전체 내용은 이메일 또는 Notion을 확인하세요.)"
 
     payload = {
@@ -862,7 +862,8 @@ def send_notion(report):
         print("NOTION_PARENT_PAGE_ID가 없어서 Notion 저장을 건너뜁니다.")
         return
 
-    title = f"증시 분석 보고서 - {now_kst().strftime('%Y-%m-%d')}"
+    created_at = now_kst()
+    title = f"증시 분석 보고서 - {created_at.strftime('%Y-%m-%d %H:%M KST')}"
 
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -873,7 +874,7 @@ def send_notion(report):
     # Notion 페이지 맨 위에 들어갈 메타 정보
     intro_blocks = [
         make_text_block("heading_1", title),
-        make_text_block("paragraph", f"생성 시각: {now_kst().strftime('%Y-%m-%d %H:%M:%S KST')}"),
+        make_text_block("paragraph", f"생성 시각: {created_at.strftime('%Y-%m-%d %H:%M:%S KST')}"),
         make_text_block("paragraph", "자동 생성된 증시 분석 보고서입니다."),
         make_text_block("paragraph", "주의: 이 보고서는 투자 권유가 아니라 참고용 분석 자료입니다."),
         make_divider_block(),
