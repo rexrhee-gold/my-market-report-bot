@@ -24,6 +24,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
 
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
+ALPHAVANTAGE_KEY = os.getenv("ALPHAVANTAGE_KEY")
 
 EMAIL_TO = os.getenv("EMAIL_TO")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -49,6 +50,14 @@ def now_kst():
 
 def since_utc(hours=24):
     return datetime.now(UTC) - timedelta(hours=hours)
+
+def alpha_time_from(hours=72):
+    """
+    Alpha Vantage NEWS_SENTIMENT API용 시간 형식입니다.
+    예: 20260614T0700
+    """
+    target_time = datetime.now(UTC) - timedelta(hours=hours)
+    return target_time.strftime("%Y%m%dT%H%M")    
 
 
 # =========================
@@ -149,6 +158,92 @@ def fetch_newsapi():
     print(f"뉴스 {len(result)}개 수집 완료")
     return result
 
+def fetch_alpha_vantage_news():
+    """
+    Alpha Vantage NEWS_SENTIMENT API에서 시장 뉴스와 감성 데이터를 가져옵니다.
+    """
+    if not ALPHAVANTAGE_KEY:
+        print("ALPHAVANTAGE_KEY가 없습니다. Alpha Vantage 뉴스 수집을 건너뜁니다.")
+        return []
+
+    url = "https://www.alphavantage.co/query"
+
+    params = {
+        "function": "NEWS_SENTIMENT",
+        "topics": "financial_markets,economy_monetary,economy_macro,technology",
+        "time_from": alpha_time_from(72),
+        "sort": "LATEST",
+        "limit": 50,
+        "apikey": ALPHAVANTAGE_KEY,
+    }
+
+    print("Alpha Vantage 뉴스 데이터 수집 시작")
+    print("Alpha Vantage topics:", params["topics"])
+    print("Alpha Vantage time_from:", params["time_from"])
+
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+
+    data = response.json()
+
+    if "Information" in data:
+        print("Alpha Vantage Information:", data.get("Information"))
+        return []
+
+    if "Note" in data:
+        print("Alpha Vantage Note:", data.get("Note"))
+        return []
+
+    if "Error Message" in data:
+        print("Alpha Vantage Error:", data.get("Error Message"))
+        return []
+
+    feed = data.get("feed", [])
+
+    result = []
+
+    for item in feed:
+        title = item.get("title")
+        article_url = item.get("url")
+
+        if not title or not article_url:
+            continue
+
+        ticker_sentiment = item.get("ticker_sentiment", [])
+
+        related_tickers = []
+        for ticker_item in ticker_sentiment[:10]:
+            ticker = ticker_item.get("ticker")
+            relevance_score = ticker_item.get("relevance_score")
+            sentiment_label = ticker_item.get("ticker_sentiment_label")
+
+            if ticker:
+                related_tickers.append(
+                    {
+                        "ticker": ticker,
+                        "relevance_score": relevance_score,
+                        "sentiment_label": sentiment_label,
+                    }
+                )
+
+        result.append(
+            {
+                "source": item.get("source"),
+                "title": title,
+                "description": item.get("summary"),
+                "url": article_url,
+                "published_at": item.get("time_published"),
+                "provider": "Alpha Vantage",
+                "overall_sentiment_score": item.get("overall_sentiment_score"),
+                "overall_sentiment_label": item.get("overall_sentiment_label"),
+                "topics": item.get("topics", []),
+                "related_tickers": related_tickers,
+            }
+        )
+
+    print(f"Alpha Vantage 뉴스 {len(result)}개 수집 완료")
+    return result
+
 
 def dedupe_articles(articles):
     seen = set()
@@ -169,21 +264,30 @@ def build_data_packet():
     articles = []
     watchlist = load_watchlist()
 
-    articles.extend(fetch_newsapi())
+    newsapi_articles = fetch_newsapi()
+    alpha_articles = fetch_alpha_vantage_news()
+
+    articles.extend(newsapi_articles)
+    articles.extend(alpha_articles)
 
     articles = dedupe_articles(articles)
 
     data_packet = {
         "generated_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S KST"),
         "article_count": len(articles),
+        "newsapi_article_count": len(newsapi_articles),
+        "alpha_vantage_article_count": len(alpha_articles),
         "watchlist_count": len(watchlist),
         "watchlist": watchlist,
-        "articles": articles[:80],
-        "instruction": "이 데이터와 관심 종목 목록을 근거로 오늘의 증시 분석 보고서를 작성하라.",
+        "articles": articles[:100],
+        "instruction": "NewsAPI와 Alpha Vantage 데이터를 근거로 오늘의 증시 분석 보고서를 작성하라.",
     }
 
+    print(f"NewsAPI 기사 수: {len(newsapi_articles)}개")
+    print(f"Alpha Vantage 기사 수: {len(alpha_articles)}개")
     print(f"최종 기사 수: {len(articles)}개")
     print(f"관심 종목 수: {len(watchlist)}개")
+
     return data_packet
 
 
@@ -228,6 +332,12 @@ DATA:
 - 주목할 섹터와 리스크 요인을 정리하세요.
 - 가능한 경우 기사 출처와 URL을 함께 표시하세요.
 - 투자 권유가 아니라 참고용 분석이라는 문구를 포함하세요.
+
+Alpha Vantage 데이터 활용 요구사항:
+- provider가 "Alpha Vantage"인 뉴스는 감성 분석 정보를 함께 참고하세요.
+- overall_sentiment_label이 Bullish, Bearish, Neutral 중 무엇인지 확인하세요.
+- related_tickers가 있으면 관련 종목 영향 분석에 반영하세요.
+- NewsAPI와 Alpha Vantage가 같은 이슈를 다루면 중복 이슈로 보지 말고 하나의 핵심 이슈로 통합하세요.
 
 관심 종목 분석 요구사항:
 - data_packet 안의 watchlist 항목을 반드시 확인하세요.
