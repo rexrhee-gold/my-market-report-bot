@@ -2,10 +2,10 @@ name: US Market Daily Report
 
 on:
   schedule:
-    # 미국장 마감 후 한국시간 화~토 오전 6:50 실행
-    # GitHub Actions cron은 UTC 기준입니다.
-    # UTC 월~금 21:50 = 한국시간 화~토 06:50
-    - cron: "50 21 * * 1-5"
+    # 한국시간 화~토 06:50 실행
+    # 미국 정규장 마감 후 한국시간 아침 리포트
+    - cron: "50 6 * * 2-6"
+      timezone: "Asia/Seoul"
 
   workflow_dispatch:
 
@@ -22,6 +22,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Print runner time
+        run: |
+          echo "UTC time:"
+          date -u
+          echo "KST time:"
+          TZ=Asia/Seoul date
+          echo "GitHub event: ${{ github.event_name }}"
+          echo "GitHub schedule: ${{ github.event.schedule }}"
 
       - name: Install dependencies
         run: |

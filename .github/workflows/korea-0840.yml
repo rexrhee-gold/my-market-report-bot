@@ -2,17 +2,16 @@ name: Korea Market 0840 Check
 
 on:
   schedule:
-    # 한국시간 월~금 오전 8:40 실행
-    # GitHub Actions cron은 UTC 기준입니다.
-    # UTC 23:40 = 한국시간 다음날 08:40
-    - cron: "40 23 * * 0-4"
+    # 한국시간 기준 실행
+    - cron: "40 8 * * 1-5"
+      timezone: "Asia/Seoul"
 
   workflow_dispatch:
 
 jobs:
   korea-0840-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -22,6 +21,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Print runner time
+        run: |
+          echo "UTC time:"
+          date -u
+          echo "KST time:"
+          TZ=Asia/Seoul date
+          echo "GitHub event: ${{ github.event_name }}"
+          echo "GitHub schedule: ${{ github.event.schedule }}"
 
       - name: Install dependencies
         run: |
@@ -43,4 +51,6 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+          OPENDART_TIMEOUT: "8"
+          OPENDART_MAX_COMPANIES: "25"
         run: python korea_market.py

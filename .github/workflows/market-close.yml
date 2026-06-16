@@ -2,14 +2,16 @@ name: Market Close Review
 
 on:
   schedule:
-    # GitHub Actions cron은 UTC 기준입니다.
-    # 07:30 UTC = 한국시간 16:30 KST
-    - cron: "30 7 * * 1-5"
+    # 한국시간 월~금 16:30 실행
+    - cron: "30 16 * * 1-5"
+      timezone: "Asia/Seoul"
+
   workflow_dispatch:
 
 jobs:
-  run:
+  market-close-review:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -20,12 +22,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Print runner time
+        run: |
+          echo "UTC time:"
+          date -u
+          echo "KST time:"
+          TZ=Asia/Seoul date
+          echo "GitHub event: ${{ github.event_name }}"
+          echo "GitHub schedule: ${{ github.event.schedule }}"
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run market close review
         env:
-          REPORT_MODE: close
+          REPORT_MODE: "close"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
           ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
@@ -38,4 +51,6 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+          OPENDART_TIMEOUT: "8"
+          OPENDART_MAX_COMPANIES: "25"
         run: python main.py
