@@ -2,9 +2,9 @@ name: Korea Market Intraday Update
 
 on:
   schedule:
-    # 한국시간 기준 실행
-    - cron: "30 10,13 * * 1-5"
-      timezone: "Asia/Seoul"
+    # 한국시간 월~금 10:30, 13:30 = UTC 월~금 01:30, 04:30
+    # GitHub Actions schedule cron is UTC.
+    - cron: "30 1,4 * * 1-5"
 
   workflow_dispatch:
 

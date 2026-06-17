@@ -2,10 +2,9 @@ name: US Market Daily Report
 
 on:
   schedule:
-    # 한국시간 화~토 06:50 실행
-    # 미국 정규장 마감 후 한국시간 아침 리포트
-    - cron: "50 6 * * 2-6"
-      timezone: "Asia/Seoul"
+    # 한국시간 화~토 06:50 = UTC 월~금 21:50
+    # GitHub Actions schedule cron is UTC.
+    - cron: "50 21 * * 1-5"
 
   workflow_dispatch:
 

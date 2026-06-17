@@ -2,9 +2,9 @@ name: Korea Market 0840 Check
 
 on:
   schedule:
-    # 한국시간 기준 실행
-    - cron: "40 8 * * 1-5"
-      timezone: "Asia/Seoul"
+    # 한국시간 월~금 08:40 = UTC 일~목 23:40
+    # GitHub Actions schedule cron is UTC.
+    - cron: "40 23 * * 0-4"
 
   workflow_dispatch:
 
