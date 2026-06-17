@@ -31,12 +31,49 @@ jobs:
           echo "GitHub event: ${{ github.event_name }}"
           echo "GitHub schedule: ${{ github.event.schedule }}"
 
+      - name: Check KST execution window
+        id: kst_guard
+        run: |
+          echo "Workflow: Korea Market 0840 Check"
+          echo "Allowed KST window: 08:30~09:10 KST"
+
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Manual run detected. Bypassing KST guard."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          HOUR=$(TZ=Asia/Seoul date +%H)
+          MIN=$(TZ=Asia/Seoul date +%M)
+          MIN_NUM=$((10#$MIN))
+
+          echo "Current KST time: $HOUR:$MIN"
+          SHOULD_RUN=false
+
+          if [ "$HOUR" = "08" ] && [ "$MIN_NUM" -ge 30 ]; then
+            SHOULD_RUN=true
+          fi
+
+          if [ "$HOUR" = "09" ] && [ "$MIN_NUM" -le 10 ]; then
+            SHOULD_RUN=true
+          fi
+
+          if [ "$SHOULD_RUN" = "true" ]; then
+            echo "Inside allowed KST window. Continue."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Outside allowed KST window. Skip report sending."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install dependencies
+        if: steps.kst_guard.outputs.should_run == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Korea 0840 pre-open check
+        if: steps.kst_guard.outputs.should_run == 'true'
         env:
           REPORT_MODE: "0840"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -53,4 +90,4 @@ jobs:
           NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
           OPENDART_TIMEOUT: "8"
           OPENDART_MAX_COMPANIES: "25"
-        run: python korea_market.py
+        run: python -u korea_market.py
