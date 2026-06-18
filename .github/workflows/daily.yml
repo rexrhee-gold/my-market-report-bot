@@ -2,9 +2,8 @@ name: Daily Market Report
 
 on:
   schedule:
-    # 한국시간 월~금 07:15 = UTC 일~목 22:15
-    # GitHub Actions schedule cron is UTC.
-    - cron: "15 22 * * 0-4"
+    # Multiple attempts are used because GitHub scheduled jobs can be delayed or dropped.
+    - cron: "5,20,35,50 22 * * 0-4"
 
   workflow_dispatch:
 
@@ -35,41 +34,67 @@ jobs:
         id: kst_guard
         run: |
           echo "Workflow: Daily Market Report"
-          echo "Allowed KST window: 07:00~07:59 KST"
+          echo "Allowed KST window: 07:00~07:59 KST, weekdays only"
 
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "Manual run detected. Bypassing KST guard."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "report_key=daily-manual-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
+          KST_DATE=$(TZ=Asia/Seoul date +%Y%m%d)
+          KST_DAY=$(TZ=Asia/Seoul date +%u)
           HOUR=$(TZ=Asia/Seoul date +%H)
           MIN=$(TZ=Asia/Seoul date +%M)
           MIN_NUM=$((10#$MIN))
 
+          echo "Current KST date: $KST_DATE"
+          echo "Current KST day: $KST_DAY"
           echo "Current KST time: $HOUR:$MIN"
-          SHOULD_RUN=false
 
-          if [ "$HOUR" = "07" ]; then
+          SHOULD_RUN=false
+          REPORT_SLOT="daily"
+
+          if [ "$KST_DAY" -ge 1 ] && [ "$KST_DAY" -le 5 ] && [ "$HOUR" = "07" ]; then
             SHOULD_RUN=true
+            REPORT_SLOT="daily"
           fi
 
           if [ "$SHOULD_RUN" = "true" ]; then
+            REPORT_KEY="$REPORT_SLOT-$KST_DATE"
             echo "Inside allowed KST window. Continue."
+            echo "Report key: $REPORT_KEY"
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "report_key=$REPORT_KEY" >> "$GITHUB_OUTPUT"
           else
             echo "Outside allowed KST window. Skip report sending."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "report_key=daily-skip-$KST_DATE-$HOUR$MIN" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Restore sent marker
+        id: sent_cache
+        if: steps.kst_guard.outputs.should_run == 'true' && github.event_name == 'schedule'
+        uses: actions/cache@v4
+        with:
+          path: .workflow-sent/${{ steps.kst_guard.outputs.report_key }}.txt
+          key: ${{ steps.kst_guard.outputs.report_key }}
+
+      - name: Prepare sent marker
+        if: steps.kst_guard.outputs.should_run == 'true' && (github.event_name != 'schedule' || steps.sent_cache.outputs.cache-hit != 'true')
+        run: |
+          mkdir -p .workflow-sent
+          echo "sent marker for ${{ steps.kst_guard.outputs.report_key }}" > ".workflow-sent/${{ steps.kst_guard.outputs.report_key }}.txt"
+
       - name: Install dependencies
-        if: steps.kst_guard.outputs.should_run == 'true'
+        if: steps.kst_guard.outputs.should_run == 'true' && (github.event_name != 'schedule' || steps.sent_cache.outputs.cache-hit != 'true')
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run daily market report
-        if: steps.kst_guard.outputs.should_run == 'true'
+        if: steps.kst_guard.outputs.should_run == 'true' && (github.event_name != 'schedule' || steps.sent_cache.outputs.cache-hit != 'true')
         env:
           REPORT_MODE: "morning"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -87,3 +112,8 @@ jobs:
           OPENDART_TIMEOUT: "8"
           OPENDART_MAX_COMPANIES: "25"
         run: python -u main.py
+
+      - name: Already sent for this slot
+        if: steps.kst_guard.outputs.should_run == 'true' && github.event_name == 'schedule' && steps.sent_cache.outputs.cache-hit == 'true'
+        run: |
+          echo "Report already sent for ${{ steps.kst_guard.outputs.report_key }}. Skip duplicate sending."
